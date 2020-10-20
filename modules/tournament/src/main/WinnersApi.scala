@@ -7,6 +7,7 @@ import scala.concurrent.duration._
 import chess.variant.{ FromPosition, Standard, Variant }
 import lila.db.dsl._
 import Schedule.{ Freq, Speed }
+import lila.user.User
 
 case class Winner(
     tourId: String,
@@ -50,7 +51,7 @@ case class AllWinners(
     }
   ).flatten
 
-  def userIds =
+  lazy val userIds =
     List(hyperbullet, bullet, superblitz, blitz, rapid).flatMap(_.userIds) :::
       elite.map(_.userId) ::: marathon.map(_.userId) :::
       variants.values.toList.flatMap(_.userIds)
@@ -58,8 +59,7 @@ case class AllWinners(
 
 final class WinnersApi(
     tournamentRepo: TournamentRepo,
-    mongoCache: lila.memo.MongoCache.Builder,
-    ttl: FiniteDuration,
+    mongoCache: lila.memo.MongoCache.Api,
     scheduler: akka.actor.Scheduler
 )(implicit ec: scala.concurrent.ExecutionContext) {
 
@@ -69,7 +69,7 @@ final class WinnersApi(
   implicit private val AllWinnersHandler  = reactivemongo.api.bson.Macros.handler[AllWinners]
 
   private def fetchLastFreq(freq: Freq, since: DateTime): Fu[List[Tournament]] =
-    tournamentRepo.coll.ext
+    tournamentRepo.coll
       .find(
         $doc(
           "schedule.freq" -> freq.name,
@@ -78,7 +78,8 @@ final class WinnersApi(
         )
       )
       .sort($sort desc "startsAt")
-      .list[Tournament](Int.MaxValue, ReadPreference.secondaryPreferred)
+      .cursor[Tournament](ReadPreference.secondaryPreferred)
+      .list(Int.MaxValue)
 
   private def firstStandardWinner(tours: List[Tournament], speed: Speed): Option[Winner] =
     tours
@@ -99,12 +100,13 @@ final class WinnersApi(
       elites    <- fetchLastFreq(Freq.Weekend, DateTime.now.minusWeeks(3))
       marathons <- fetchLastFreq(Freq.Marathon, DateTime.now.minusMonths(13))
     } yield {
-      def standardFreqWinners(speed: Speed): FreqWinners = FreqWinners(
-        yearly = firstStandardWinner(yearlies, speed),
-        monthly = firstStandardWinner(monthlies, speed),
-        weekly = firstStandardWinner(weeklies, speed),
-        daily = firstStandardWinner(dailies, speed)
-      )
+      def standardFreqWinners(speed: Speed): FreqWinners =
+        FreqWinners(
+          yearly = firstStandardWinner(yearlies, speed),
+          monthly = firstStandardWinner(monthlies, speed),
+          weekly = firstStandardWinner(weeklies, speed),
+          daily = firstStandardWinner(dailies, speed)
+        )
       AllWinners(
         hyperbullet = standardFreqWinners(Speed.HyperBullet),
         bullet = standardFreqWinners(Speed.Bullet),
@@ -124,19 +126,24 @@ final class WinnersApi(
       )
     }
 
-  private val allCache = mongoCache.single[AllWinners](
-    prefix = "tournament:winner:all",
-    f = fetchAll,
-    timeToLive = ttl
-  )
+  private val allCache = mongoCache.unit[AllWinners](
+    "tournament:winner:all",
+    59 minutes
+  ) { loader =>
+    _.refreshAfterWrite(1 hour)
+      .buildAsyncFuture(loader(_ => fetchAll))
+  }
 
-  def all: Fu[AllWinners] = allCache(())
+  def all: Fu[AllWinners] = allCache.get {}
 
   // because we read on secondaries, delay cache clear
-  def clearCache(tour: Tournament) =
+  def clearCache(tour: Tournament): Unit =
     if (tour.schedule.exists(_.freq.isDailyOrBetter))
-      scheduler.scheduleOnce(5.seconds) { allCache.remove(()) }
+      scheduler.scheduleOnce(5.seconds) { allCache.invalidate {}.unit }.unit
 
+  private[tournament] def clearAfterMarking(userId: User.ID): Funit = all map { winners =>
+    if (winners.userIds contains userId) allCache.invalidate {}.unit
+  }
 }
 
 object WinnersApi {

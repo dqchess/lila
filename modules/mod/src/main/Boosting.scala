@@ -33,25 +33,27 @@ final class BoostingApi(
   def determineBoosting(record: BoostingRecord, winner: User, loser: User): Funit =
     (record.games >= nbGamesToMark) ?? {
       {
-        (record.games >= (winner.count.rated * ratioGamesToMark)) ?? modApi.autoBooster(winner.id, loser.id)
+        (record.games >= (winner.count.rated * ratioGamesToMark)) ?? modApi.autoBoost(winner.id, loser.id)
       } >> {
-        (record.games >= (loser.count.rated * ratioGamesToMark)) ?? modApi.autoBooster(winner.id, loser.id)
+        (record.games >= (loser.count.rated * ratioGamesToMark)) ?? modApi.autoBoost(winner.id, loser.id)
       }
     }
 
   def boostingId(winner: User, loser: User): String = winner.id + "/" + loser.id
 
   def check(game: Game, whiteUser: User, blackUser: User): Funit = {
-    if (game.rated
-        && game.accountable
-        && game.playedTurns <= 10
-        && !game.isTournament
-        && game.winnerColor.isDefined
-        && variants.contains(game.variant)
-        && !game.isCorrespondence
-        && game.clock.fold(false) { _.limitInMinutes >= 1 }) {
+    if (
+      game.rated
+      && game.accountable
+      && game.playedTurns <= 10
+      && !game.isTournament
+      && game.winnerColor.isDefined
+      && variants.contains(game.variant)
+      && !game.isCorrespondence
+      && game.clock.fold(false) { _.limitInMinutes >= 1 }
+    ) {
       game.winnerColor match {
-        case Some(a) => {
+        case Some(a) =>
           val result: GameResult = a match {
             case Color.White => GameResult(winner = whiteUser, loser = blackUser)
             case Color.Black => GameResult(winner = blackUser, loser = whiteUser)
@@ -72,7 +74,6 @@ final class BoostingApi(
                 )
               )
           }
-        }
         case None => funit
       }
     } else {

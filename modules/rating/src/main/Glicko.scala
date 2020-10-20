@@ -20,13 +20,16 @@ case class Glicko(
   def intervalMax = (rating + deviation * 2).toInt
   def interval    = intervalMin -> intervalMax
 
-  def rankable(variant: chess.variant.Variant) = deviation <= {
-    if (variant.standard) Glicko.standardRankableDeviation
-    else Glicko.variantRankableDeviation
-  }
+  def rankable(variant: chess.variant.Variant) =
+    deviation <= {
+      if (variant.standard) Glicko.standardRankableDeviation
+      else Glicko.variantRankableDeviation
+    }
   def provisional          = deviation >= Glicko.provisionalDeviation
   def established          = !provisional
   def establishedIntRating = established option intRating
+
+  def clueless = deviation >= Glicko.cluelessDeviation
 
   def refund(points: Int) = copy(rating = rating + points)
 
@@ -38,17 +41,19 @@ case class Glicko(
       volatility > 0 &&
       volatility < (Glicko.maxVolatility * 2)
 
-  def cap = copy(
-    rating = rating atLeast Glicko.minRating,
-    deviation = deviation atLeast Glicko.minDeviation atMost Glicko.maxDeviation,
-    volatility = volatility atMost Glicko.maxVolatility
-  )
+  def cap =
+    copy(
+      rating = rating atLeast Glicko.minRating,
+      deviation = deviation atLeast Glicko.minDeviation atMost Glicko.maxDeviation,
+      volatility = volatility atMost Glicko.maxVolatility
+    )
 
-  def average(other: Glicko) = Glicko(
-    rating = (rating + other.rating) / 2,
-    deviation = (deviation + other.deviation) / 2,
-    volatility = (volatility + other.volatility) / 2
-  )
+  def average(other: Glicko) =
+    Glicko(
+      rating = (rating + other.rating) / 2,
+      deviation = (deviation + other.deviation) / 2,
+      volatility = (volatility + other.volatility) / 2
+    )
 
   def display = s"$intRating${provisional ?? "?"}"
 
@@ -59,29 +64,31 @@ case object Glicko {
 
   val minRating = 600
 
-  val default = Glicko(1500d, 350d, 0.06d)
-
-  val defaultIntRating = default.rating.toInt
-
-  val minDeviation              = 47.5
+  val minDeviation              = 45
   val variantRankableDeviation  = 65
   val standardRankableDeviation = 75
   val provisionalDeviation      = 110
-  val maxDeviation              = 350
+  val cluelessDeviation         = 230
+  val maxDeviation              = 500d
 
   // past this, it might not stabilize ever again
-  val maxVolatility = 0.1d
+  val maxVolatility     = 0.1d
+  val defaultVolatility = 0.09d
 
   // Chosen so a typical player's RD goes from 60 -> 110 in 1 year
   val ratingPeriodsPerDay = 0.21436d
 
+  val default = Glicko(1500d, maxDeviation, defaultVolatility)
+
+  // managed is for students invited to a class
+  val defaultManaged       = Glicko(1200d, 400d, defaultVolatility)
+  val defaultManagedPuzzle = Glicko(1000d, 400d, defaultVolatility)
+
+  // rating that can be lost or gained with a single game
+  val maxRatingDelta = 700
+
   val tau    = 0.75d
   val system = new RatingCalculator(default.volatility, tau, ratingPeriodsPerDay)
-
-  def range(rating: Double, deviation: Double) = (
-    rating - (deviation * 2),
-    rating + (deviation * 2)
-  )
 
   def liveDeviation(p: Perf, reverse: Boolean): Double = {
     system.previewDeviation(p.toRating, new DateTime, reverse)
@@ -89,17 +96,19 @@ case object Glicko {
 
   implicit val glickoBSONHandler = new BSON[Glicko] {
 
-    def reads(r: BSON.Reader): Glicko = Glicko(
-      rating = r double "r",
-      deviation = r double "d",
-      volatility = r double "v"
-    )
+    def reads(r: BSON.Reader): Glicko =
+      Glicko(
+        rating = r double "r",
+        deviation = r double "d",
+        volatility = r double "v"
+      )
 
-    def writes(w: BSON.Writer, o: Glicko) = BSONDocument(
-      "r" -> w.double(o.rating),
-      "d" -> w.double(o.deviation),
-      "v" -> w.double(o.volatility)
-    )
+    def writes(w: BSON.Writer, o: Glicko) =
+      BSONDocument(
+        "r" -> w.double(o.rating),
+        "d" -> w.double(o.deviation),
+        "v" -> w.double(o.volatility)
+      )
   }
 
   sealed abstract class Result {

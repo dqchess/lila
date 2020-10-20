@@ -1,14 +1,15 @@
-import { h } from 'snabbdom'
-import { VNode } from 'snabbdom/vnode'
+import { h } from 'snabbdom';
+import { VNode } from 'snabbdom/vnode';
+import { numberFormat } from 'common/number';
 import { view as renderConfig } from './explorerConfig';
 import { bind, dataIcon } from '../util';
 import { winnerOf } from './explorerUtil';
 import AnalyseCtrl from '../ctrl';
-import { isOpening, isTablebase, TablebaseMoveStats, OpeningMoveStats, OpeningGame } from './interfaces';
+import { isOpening, isTablebase, TablebaseMoveStats, OpeningData, OpeningMoveStats, OpeningGame, Opening } from './interfaces';
 
 function resultBar(move: OpeningMoveStats): VNode {
   const sum = move.white + move.draws + move.black;
-  function section(key) {
+  function section(key: 'white' | 'black' | 'draws') {
     const percent = move[key] * 100 / sum;
     return percent === 0 ? null : h('span.' + key, {
       attrs: { style: 'width: ' + (Math.round(move[key] * 1000 / sum) / 10) + '%' },
@@ -23,31 +24,31 @@ function moveTableAttributes(ctrl: AnalyseCtrl, fen: Fen) {
   return {
     attrs: { 'data-fen': fen },
     hook: {
-      insert: vnode => {
+      insert(vnode: VNode) {
         const el = vnode.elm as HTMLElement;
         el.addEventListener('mouseover', e => {
-          ctrl.explorer.setHovering($(el).attr('data-fen'), $(e.target as HTMLElement).parents('tr').attr('data-uci'));
+          ctrl.explorer.setHovering($(el).attr('data-fen')!, $(e.target as HTMLElement).parents('tr').attr('data-uci'));
         });
         el.addEventListener('mouseout', _ => {
-          ctrl.explorer.setHovering($(el).attr('data-fen'), null);
+          ctrl.explorer.setHovering($(el).attr('data-fen')!, null);
         });
         el.addEventListener('mousedown', e => {
           const uci = $(e.target as HTMLElement).parents('tr').attr('data-uci');
           if (uci) ctrl.explorerMove(uci);
         });
       },
-      postpatch: (_, vnode) => {
+      postpatch(old: VNode) {
         setTimeout(() => {
-          const el = vnode.elm as HTMLElement;
-          ctrl.explorer.setHovering($(el).attr('data-fen'), $(el).find('tr:hover').attr('data-uci'));
+          const el = old.elm as HTMLElement;
+          ctrl.explorer.setHovering($(el).attr('data-fen')!, $(el).find('tr:hover').attr('data-uci'));
         }, 100);
       }
     }
   };
 }
 
-function showMoveTable(ctrl: AnalyseCtrl, moves: OpeningMoveStats[], fen: Fen): VNode | null {
-  if (!moves.length) return null;
+function showMoveTable(ctrl: AnalyseCtrl, data: OpeningData): VNode | null {
+  if (!data.moves.length) return null;
   const trans = ctrl.trans.noarg;
   return h('table.moves', [
     h('thead', [
@@ -57,7 +58,7 @@ function showMoveTable(ctrl: AnalyseCtrl, moves: OpeningMoveStats[], fen: Fen): 
         h('th.title', trans('whiteDrawBlack'))
       ])
     ]),
-    h('tbody', moveTableAttributes(ctrl, fen), moves.map(move => {
+    h('tbody', moveTableAttributes(ctrl, data.fen), data.moves.map(move => {
       return h('tr', {
         key: move.uci,
         attrs: {
@@ -66,7 +67,7 @@ function showMoveTable(ctrl: AnalyseCtrl, moves: OpeningMoveStats[], fen: Fen): 
         }
       }, [
         h('td', move.san[0] === 'P' ? move.san.slice(1) : move.san),
-        h('td', window.lichess.numberFormat(move.white + move.draws + move.black)),
+        h('td', numberFormat(move.white + move.draws + move.black)),
         h('td', resultBar(move))
       ]);
     }))
@@ -117,7 +118,7 @@ function openGame(ctrl: AnalyseCtrl, gameId: string) {
   fenParam = ctrl.node.ply > 0 ? ('?fen=' + ctrl.node.fen) : '';
   let url = '/' + gameId + '/' + orientation + fenParam;
   if (ctrl.explorer.config.data.db.selected() === 'masters') url = '/import/master' + url;
-  window.open(url, '_blank');
+  window.open(url, '_blank', 'noopener');
 }
 
 function gameActions(ctrl: AnalyseCtrl, game: OpeningGame): VNode {
@@ -181,6 +182,7 @@ function showDtm(ctrl: AnalyseCtrl, fen: Fen, move: TablebaseMoveStats) {
       title: ctrl.trans.plural('mateInXHalfMoves', Math.abs(move.dtm)) + ' (Depth To Mate)'
     }
   }, 'DTM ' + Math.abs(move.dtm));
+  return undefined;
 }
 
 function showDtz(ctrl: AnalyseCtrl, fen: Fen, move: TablebaseMoveStats): VNode | null {
@@ -209,9 +211,11 @@ function closeButton(ctrl: AnalyseCtrl): VNode {
   }, ctrl.trans.noarg('close'));
 }
 
-function showEmpty(ctrl: AnalyseCtrl): VNode {
+function showEmpty(ctrl: AnalyseCtrl, opening?: Opening): VNode {
   return h('div.data.empty', [
-    h('div.title', showTitle(ctrl, ctrl.data.game.variant)),
+    h('div.title', h('span', {
+      attrs: opening ? { title: opening && `${opening.eco} ${opening.name}` } : {}
+    }, opening ? [h('strong', opening.eco), ' ', opening.name] : [showTitle(ctrl, ctrl.data.game.variant)])),
     h('div.message', [
       h('strong', ctrl.trans.noarg('noGameFound')),
       ctrl.explorer.config.fullHouse() ?
@@ -237,20 +241,32 @@ function show(ctrl: AnalyseCtrl) {
   const trans = ctrl.trans.noarg,
   data = ctrl.explorer.current();
   if (data && isOpening(data)) {
-    const moveTable = showMoveTable(ctrl, data.moves, data.fen),
+    const moveTable = showMoveTable(ctrl, data),
     recentTable = showGameTable(ctrl, trans('recentGames'), data.recentGames || []),
     topTable = showGameTable(ctrl, trans('topGames'), data.topGames || []);
-    if (moveTable || recentTable || topTable) lastShow = h('div.data', [moveTable, topTable, recentTable]);
-    else lastShow = showEmpty(ctrl);
+    if (moveTable || recentTable || topTable) lastShow = h('div.data', [
+      data && data.opening && h('div.title', h('span', {
+        attrs: data.opening ? { title: data.opening && `${data.opening.eco} ${data.opening.name}` } : {},
+      }, [h('strong', data.opening.eco), ' ', data.opening.name])),
+      moveTable,
+      topTable,
+      recentTable
+    ]);
+    else lastShow = showEmpty(ctrl, data && data.opening);
   } else if (data && isTablebase(data)) {
+    const halfmoves = parseInt(data.fen.split(' ')[4], 10) + 1;
+    const zeroed = halfmoves === 1;
     const moves = data.moves;
+    const dtz = m => (m.checkmate || m.variant_win || m.variant_loss || m.zeroing) ? 0 : m.dtz;
     if (moves.length) lastShow = h('div.data', ([
-      [trans('winning'), m => m.wdl === -2],
-      [trans('unknown'), m => m.wdl === null],
-      [trans('winPreventedBy50MoveRule'), m => m.wdl === -1],
+      [trans('winning'), m => m.wdl === -2 && m.dtz !== null && (zeroed || dtz(m) - halfmoves > -100)],
+      [trans('unknown'), m => m.wdl === null || m.dtz === null],
+      ['Winning or 50 moves by prior mistake', m => m.wdl === -2 && m.dtz !== null && !zeroed && dtz(m) - halfmoves === -100],
+      [trans('winPreventedBy50MoveRule'), m => m.dtz !== null && (m.wdl === -1 || (m.wdl === -2 && !zeroed && dtz(m) - halfmoves < -100))],
       [trans('drawn'), m => m.wdl === 0],
-      [trans('lossSavedBy50MoveRule'), m => m.wdl === 1],
-      [trans('losing'), m => m.wdl === 2],
+      [trans('lossSavedBy50MoveRule'), m => m.dtz !== null && (m.wdl === 1 || (m.wdl === 2 && !zeroed && dtz(m) + halfmoves > 100))],
+      ['Losing or 50 moves by prior mistake', m => m.wdl === 2 && m.dtz !== null && !zeroed && dtz(m) + halfmoves === 100],
+      [trans('losing'), m => m.wdl === 2 && m.dtz !== null && (zeroed || dtz(m) + halfmoves < 100)],
     ] as [string, (move: TablebaseMoveStats) => boolean][])
       .map(a => showTablebase(ctrl, a[0] as string, moves.filter(a[1]), data.fen))
       .reduce(function(a, b) { return a.concat(b); }, []));

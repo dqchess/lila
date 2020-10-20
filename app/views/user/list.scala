@@ -1,6 +1,8 @@
 package views.html
 package user
 
+import play.api.i18n.Lang
+
 import lila.api.Context
 import lila.app.templating.Environment._
 import lila.app.ui.ScalatagsTemplate._
@@ -24,7 +26,7 @@ object list {
       openGraph = lila.app.ui
         .OpenGraph(
           title = "Chess players and leaderboards",
-          url = s"$netBaseUrl${routes.User.list.url}",
+          url = s"$netBaseUrl${routes.User.list().url}",
           description =
             "Best chess players in bullet, blitz, rapid, classical, Chess960 and more chess variants"
         )
@@ -69,7 +71,7 @@ object list {
   private def tournamentWinners(winners: List[lila.tournament.Winner])(implicit ctx: Context) =
     st.section(cls := "user-top")(
       h2(cls := "text", dataIcon := "g")(
-        a(href := routes.Tournament.leaderboard)(trans.tournament())
+        a(href := routes.Tournament.leaderboard())(trans.tournament())
       ),
       ol(winners take 10 map { w =>
         li(
@@ -81,10 +83,10 @@ object list {
       })
     )
 
-  private def userTopPerf(users: List[User.LightPerf], perfType: PerfType) =
+  private def userTopPerf(users: List[User.LightPerf], perfType: PerfType)(implicit lang: Lang) =
     st.section(cls := "user-top")(
       h2(cls := "text", dataIcon := perfType.iconChar)(
-        a(href := routes.User.topNb(200, perfType.key))(perfType.name)
+        a(href := routes.User.topNb(200, perfType.key))(perfType.trans)
       ),
       ol(users map { l =>
         li(
@@ -94,8 +96,8 @@ object list {
       })
     )
 
-  private def userTopActive(users: List[User.LightCount], hTitle: Frag, icon: Option[Char])(
-      implicit ctx: Context
+  private def userTopActive(users: List[User.LightCount], hTitle: Frag, icon: Option[Char])(implicit
+      ctx: Context
   ) =
     st.section(cls := "user-top")(
       h2(cls := "text", dataIcon := icon.map(_.toString))(hTitle),

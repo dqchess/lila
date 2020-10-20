@@ -5,17 +5,17 @@ import reactivemongo.api.bson._
 import reactivemongo.api.ReadPreference
 import scala.concurrent.duration._
 
-import lila.common.{ AtMost, Every }
 import lila.db.dsl._
-import lila.memo.PeriodicRefreshCache
+import lila.memo.CacheApi._
 import lila.rating.{ Glicko, Perf, PerfType }
 
 final class RankingApi(
     userRepo: UserRepo,
     coll: Coll,
-    mongoCache: lila.memo.MongoCache.Builder,
+    cacheApi: lila.memo.CacheApi,
+    mongoCache: lila.memo.MongoCache.Api,
     lightUser: lila.common.LightUser.Getter
-)(implicit ec: scala.concurrent.ExecutionContext, system: akka.actor.ActorSystem) {
+)(implicit ec: scala.concurrent.ExecutionContext) {
 
   import RankingApi._
   implicit private val rankingBSONHandler = Macros.handler[Ranking]
@@ -39,35 +39,37 @@ final class RankingApi(
         upsert = true
       )
       .void
+      .recover(lila.db.ignoreDuplicateKey)
 
-  def remove(userId: User.ID): Funit = userRepo byId userId flatMap {
-    _ ?? { user =>
-      coll.delete
-        .one(
-          $inIds(
-            PerfType.leaderboardable
-              .filter { pt =>
-                user.perfs(pt).nonEmpty
-              }
-              .map { makeId(user.id, _) }
+  def remove(userId: User.ID): Funit =
+    userRepo byId userId flatMap {
+      _ ?? { user =>
+        coll.delete
+          .one(
+            $inIds(
+              PerfType.leaderboardable
+                .filter { pt =>
+                  user.perfs(pt).nonEmpty
+                }
+                .map { makeId(user.id, _) }
+            )
           )
-        )
-        .void
+          .void
+      }
     }
-  }
 
   private def makeId(userId: User.ID, perfType: PerfType) =
-    s"${userId}:${perfType.id}"
+    s"$userId:${perfType.id}"
 
   private[user] def topPerf(perfId: Perf.ID, nb: Int): Fu[List[User.LightPerf]] =
     PerfType.id2key(perfId) ?? { perfKey =>
-      coll.ext
+      coll
         .find($doc("perf" -> perfId, "stable" -> true))
         .sort($doc("rating" -> -1))
-        .cursor[Ranking](readPreference = ReadPreference.secondaryPreferred)
-        .gather[List](nb) flatMap { res =>
-        res
-          .map { r =>
+        .cursor[Ranking](ReadPreference.secondaryPreferred)
+        .list(nb)
+        .flatMap {
+          _.map { r =>
             lightUser(r.user).map {
               _ map { light =>
                 User.LightPerf(
@@ -78,13 +80,12 @@ final class RankingApi(
                 )
               }
             }
-          }
-          .sequenceFu
-          .map(_.flatten)
-      }
+          }.sequenceFu
+            .dmap(_.flatten)
+        }
     }
 
-  def fetchLeaderboard(nb: Int): Fu[Perfs.Leaderboards] =
+  private[user] def fetchLeaderboard(nb: Int): Fu[Perfs.Leaderboards] =
     for {
       ultraBullet   <- topPerf(PerfType.UltraBullet.id, nb)
       bullet        <- topPerf(PerfType.Bullet.id, nb)
@@ -119,39 +120,38 @@ final class RankingApi(
 
     private type Rank = Int
 
-    def of(userId: User.ID): Map[PerfType, Rank] =
-      cache.get flatMap {
-        case (pt, ranking) => ranking get userId map (pt -> _)
-      } toMap
+    def of(userId: User.ID): Fu[Map[PerfType, Rank]] =
+      cache.getUnit map { all =>
+        all.flatMap { case (pt, ranking) =>
+          ranking get userId map (pt -> _)
+        }
+      }
 
-    private val cache = new PeriodicRefreshCache[Map[PerfType, Map[User.ID, Rank]]](
-      every = Every(15 minutes),
-      atMost = AtMost(3 minutes),
-      f = () =>
-        lila.common.Future
-          .traverseSequentially(PerfType.leaderboardable) { pt =>
-            compute(pt) map (pt -> _)
-          }
-          .map(_.toMap),
-      default = Map.empty,
-      initialDelay = 1 minute
-    )
+    private val cache = cacheApi.unit[Map[PerfType, Map[User.ID, Rank]]] {
+      _.refreshAfterWrite(15 minutes)
+        .buildAsyncFuture { _ =>
+          lila.common.Future
+            .linear(PerfType.leaderboardable) { pt =>
+              compute(pt) dmap (pt -> _)
+            }
+            .dmap(_.toMap)
+        }
+    }
 
     private def compute(pt: PerfType): Fu[Map[User.ID, Rank]] =
-      coll.ext
+      coll
         .find(
           $doc("perf" -> pt.id, "stable" -> true),
-          $doc("_id"  -> true)
+          $doc("_id" -> true).some
         )
         .sort($doc("rating" -> -1))
         .cursor[Bdoc](readPreference = ReadPreference.secondaryPreferred)
-        .fold(1 -> Map.newBuilder[User.ID, Rank]) {
-          case (state @ (rank, b), doc) =>
-            doc.string("_id").fold(state) { id =>
-              val user = id takeWhile (':' !=)
-              b += (user -> rank)
-              (rank + 1) -> b
-            }
+        .fold(1 -> Map.newBuilder[User.ID, Rank]) { case (state @ (rank, b), doc) =>
+          doc.string("_id").fold(state) { id =>
+            val user = id takeWhile (':' !=)
+            b += (user -> rank)
+            (rank + 1) -> b
+          }
         }
         .map(_._2.result())
   }
@@ -160,14 +160,19 @@ final class RankingApi(
 
     private type NbUsers = Int
 
-    def apply(perf: PerfType) = cache(perf.id)
+    def apply(pt: PerfType) = cache.get(pt.id)
 
     private val cache = mongoCache[Perf.ID, List[NbUsers]](
-      prefix = "user:rating:distribution",
-      f = compute,
-      timeToLive = 3 hour,
-      keyToString = _.toString
-    )
+      PerfType.leaderboardable.size,
+      "user:rating:distribution",
+      179 minutes,
+      _.toString
+    ) { loader =>
+      _.refreshAfterWrite(180 minutes)
+        .buildAsyncFuture {
+          loader(compute)
+        }
+    }
 
     // from 600 to 2800 by Stat.group
     private def compute(perfId: Perf.ID): Fu[List[NbUsers]] =
@@ -205,7 +210,7 @@ final class RankingApi(
             (Glicko.minRating to 2800 by Stat.group).map { r =>
               hash.getOrElse(r, 0)
             }.toList
-          } addEffect monitorRatingDistribution(perfId) _
+          } addEffect monitorRatingDistribution(perfId)
       }
 
     /* monitors cumulated ratio of players in each rating group, for a perf
@@ -220,15 +225,17 @@ final class RankingApi(
      * rating.distribution.bullet.2800 => 0.9997
      */
     private def monitorRatingDistribution(perfId: Perf.ID)(nbUsersList: List[NbUsers]): Unit = {
-      val total = nbUsersList.foldLeft(0)(_ + _)
-      (Stat.minRating to 2800 by Stat.group).toList.zip(nbUsersList).foldLeft(0) {
-        case (prev, (rating, nbUsers)) =>
+      val total = nbUsersList.sum
+      (Stat.minRating to 2800 by Stat.group).toList
+        .zip(nbUsersList)
+        .foldLeft(0) { case (prev, (rating, nbUsers)) =>
           val acc = prev + nbUsers
           PerfType(perfId) foreach { pt =>
-            lila.mon.rating.distribution(pt.key, rating).update(acc.toDouble / total)
+            lila.mon.rating.distribution(pt.key, rating).update(prev.toDouble / total)
           }
           acc
-      }
+        }
+        .unit
     }
   }
 }

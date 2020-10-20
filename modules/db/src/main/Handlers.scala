@@ -1,17 +1,18 @@
 package lila.db
 
+import cats.data.NonEmptyList
 import org.joda.time.DateTime
 import reactivemongo.api.bson._
 import reactivemongo.api.bson.exceptions.TypeDoesNotMatchException
 import scala.util.{ Failure, Success, Try }
-import scalaz.NonEmptyList
 
 import lila.common.Iso._
 import lila.common.{ EmailAddress, IpAddress, Iso, NormalizedEmailAddress }
+import chess.format.FEN
 
 trait Handlers {
 
-  implicit val BSONJodaDateTimeHandler = dsl.quickHandler[DateTime](
+  implicit val BSONJodaDateTimeHandler = quickHandler[DateTime](
     { case v: BSONDateTime => new DateTime(v.value) },
     v => BSONDateTime(v.getMillis)
   )
@@ -42,6 +43,11 @@ trait Handlers {
   def doubleAnyValHandler[A](to: A => Double, from: Double => A): BSONHandler[A] =
     doubleIsoHandler(Iso(from, to))
 
+  def floatIsoHandler[A](implicit iso: FloatIso[A]): BSONHandler[A] =
+    BSONFloatHandler.as[A](iso.from, iso.to)
+  def floatAnyValHandler[A](to: A => Float, from: Float => A): BSONHandler[A] =
+    floatIsoHandler(Iso(from, to))
+
   def dateIsoHandler[A](implicit iso: Iso[DateTime, A]): BSONHandler[A] =
     BSONJodaDateTimeHandler.as[A](iso.from, iso.to)
 
@@ -59,43 +65,43 @@ trait Handlers {
 
   def tryHandler[T](read: PartialFunction[BSONValue, Try[T]], write: T => BSONValue): BSONHandler[T] =
     new BSONHandler[T] {
-      def readTry(bson: BSONValue) = read.applyOrElse(
-        bson,
-        (b: BSONValue) => handlerBadType(b)
-      )
+      def readTry(bson: BSONValue) =
+        read.applyOrElse(
+          bson,
+          (b: BSONValue) => handlerBadType(b)
+        )
       def writeTry(t: T) = Success(write(t))
     }
 
   def handlerBadType[T](b: BSONValue): Try[T] =
-    Failure(TypeDoesNotMatchException("BSONBinary", b.getClass.getSimpleName))
+    Failure(TypeDoesNotMatchException("BSONValue", b.getClass.getSimpleName))
 
   def handlerBadValue[T](msg: String): Try[T] =
     Failure(new IllegalArgumentException(msg))
 
-  def stringMapHandler[V](
-      implicit
+  def stringMapHandler[V](implicit
       reader: BSONReader[Map[String, V]],
       writer: BSONWriter[Map[String, V]]
-  ) = new BSONHandler[Map[String, V]] {
-    def readTry(bson: BSONValue)    = reader readTry bson
-    def writeTry(v: Map[String, V]) = writer writeTry v
-  }
+  ) =
+    new BSONHandler[Map[String, V]] {
+      def readTry(bson: BSONValue)    = reader readTry bson
+      def writeTry(v: Map[String, V]) = writer writeTry v
+    }
 
   def typedMapHandler[K, V: BSONReader: BSONWriter](keyIso: StringIso[K]) =
     stringMapHandler[V].as[Map[K, V]](
       _.map { case (k, v) => keyIso.from(k) -> v },
-      _.map { case (k, v) => keyIso.to(k)   -> v }
+      _.map { case (k, v) => keyIso.to(k) -> v }
     )
 
   implicit def bsonArrayToNonEmptyListHandler[T](implicit handler: BSONHandler[T]) = {
     def listWriter = collectionWriter[T, List[T]]
     def listReader = collectionReader[List, T]
     tryHandler[NonEmptyList[T]](
-      {
-        case array: BSONArray =>
-          listReader.readTry(array).flatMap {
-            _.toNel toTry s"BSONArray is empty, can't build NonEmptyList"
-          }
+      { case array: BSONArray =>
+        listReader.readTry(array).flatMap {
+          _.toNel toTry s"BSONArray is empty, can't build NonEmptyList"
+        }
       },
       nel => listWriter.writeTry(nel.toList).get
     )
@@ -108,5 +114,7 @@ trait Handlers {
   implicit val normalizedEmailAddressHandler =
     isoHandler[NormalizedEmailAddress, String](normalizedEmailAddressIso)
 
-  implicit val colorBoolHandler = BSONBooleanHandler.as[chess.Color](chess.Color.apply, _.white)
+  implicit val colorBoolHandler = BSONBooleanHandler.as[chess.Color](chess.Color.fromWhite, _.white)
+
+  implicit val FENHandler: BSONHandler[FEN] = stringAnyValHandler[FEN](_.value, FEN.apply)
 }

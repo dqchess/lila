@@ -1,14 +1,15 @@
 package views.html.analyse
 
-import lila.api.Context
+import play.api.i18n.Lang
+
 import lila.app.templating.Environment._
 import lila.i18n.{ I18nKeys => trans }
 
 private object jsI18n {
 
-  def apply()(implicit ctx: Context) = i18nJsObject(translations)
+  def apply()(implicit lang: Lang) = i18nJsObject(i18nKeys)
 
-  private val translations = List(
+  private val i18nKeys = List(
     trans.flipBoard,
     trans.gameAborted,
     trans.checkmate,
@@ -18,7 +19,8 @@ private object jsI18n {
     trans.whiteLeftTheGame,
     trans.blackLeftTheGame,
     trans.draw,
-    trans.timeOut,
+    trans.whiteTimeOut,
+    trans.blackTimeOut,
     trans.playingRightNow,
     trans.whiteIsVictorious,
     trans.blackIsVictorious,
@@ -50,6 +52,7 @@ private object jsI18n {
     trans.toggleLocalEvaluation,
     // action menu
     trans.menu,
+    trans.toStudy,
     trans.inlineNotation,
     trans.computerAnalysis,
     trans.enable,
@@ -71,6 +74,7 @@ private object jsI18n {
     trans.promoteVariation,
     trans.makeMainLine,
     trans.deleteFromHere,
+    trans.forceVariation,
     // practice (also uses checkmate, draw)
     trans.practiceWithComputer,
     trans.goodMove,
@@ -149,5 +153,5 @@ private object jsI18n {
     trans.opening,
     trans.middlegame,
     trans.endgame
-  )
+  ).map(_.key)
 }

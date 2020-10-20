@@ -10,25 +10,34 @@ import lila.common.LightUser
 
 final class PgnDump(
     baseUrl: BaseUrl,
-    getLightUser: LightUser.Getter
+    lightUserApi: lila.user.LightUserApi
 )(implicit ec: scala.concurrent.ExecutionContext) {
 
   import PgnDump._
 
-  def apply(game: Game, initialFen: Option[FEN], flags: WithFlags): Fu[Pgn] = {
+  def apply(
+      game: Game,
+      initialFen: Option[FEN],
+      flags: WithFlags,
+      teams: Option[Color.Map[String]] = None
+  ): Fu[Pgn] = {
     val imported = game.pgnImport.flatMap { pgni =>
       Parser.full(pgni.pgn).toOption
     }
     val tagsFuture =
-      if (flags.tags) tags(game, initialFen, imported, withOpening = flags.opening)
+      if (flags.tags) tags(game, initialFen, imported, withOpening = flags.opening, teams = teams)
       else fuccess(Tags(Nil))
     tagsFuture map { ts =>
       val turns = flags.moves ?? {
-        val fenSituation = ts.fen.map(_.value) flatMap Forsyth.<<<
+        val fenSituation = ts.fen flatMap Forsyth.<<<
         val moves2 =
-          if (fenSituation.exists(_.situation.color.black)) ".." +: game.pgnMoves else game.pgnMoves
+          if (fenSituation.exists(_.situation.color.black)) ".." +: game.pgnMoves
+          else game.pgnMoves
+        val moves3 =
+          if (flags.delayMoves > 0) moves2 dropRight flags.delayMoves
+          else moves2
         makeTurns(
-          moves2,
+          moves3,
           fenSituation.map(_.fullMoveNumber) | 1,
           flags.clocks ?? ~game.bothClockStates,
           game.startColor
@@ -41,7 +50,7 @@ final class PgnDump(
   private def gameUrl(id: String) = s"$baseUrl/$id"
 
   private def gameLightUsers(game: Game): Fu[(Option[LightUser], Option[LightUser])] =
-    (game.whitePlayer.userId ?? getLightUser) zip (game.blackPlayer.userId ?? getLightUser)
+    (game.whitePlayer.userId ?? lightUserApi.async) zip (game.blackPlayer.userId ?? lightUserApi.async)
 
   private def rating(p: Player) = p.rating.fold("?")(_.toString)
 
@@ -52,7 +61,7 @@ final class PgnDump(
     Set(chess.variant.Chess960, chess.variant.FromPosition, chess.variant.Horde, chess.variant.RacingKings)
 
   private def eventOf(game: Game) = {
-    val perf = game.perfType.fold("Standard")(_.name)
+    val perf = game.perfType.fold("Standard")(_.trans(lila.i18n.defaultLang))
     game.tournamentId.map { id =>
       s"${game.mode} $perf tournament https://lichess.org/tournament/$id"
     } orElse game.simulId.map { id =>
@@ -71,16 +80,20 @@ final class PgnDump(
       game: Game,
       initialFen: Option[FEN],
       imported: Option[ParsedPgn],
-      withOpening: Boolean
-  ): Fu[Tags] = gameLightUsers(game) map {
-    case (wu, bu) =>
+      withOpening: Boolean,
+      teams: Option[Color.Map[String]] = None
+  ): Fu[Tags] =
+    gameLightUsers(game) map { case (wu, bu) =>
       Tags {
         val importedDate = imported.flatMap(_.tags(_.Date))
         List[Option[Tag]](
-          Tag(_.Event, imported.flatMap(_.tags(_.Event)) | { if (game.imported) "Import" else eventOf(game) }).some,
+          Tag(
+            _.Event,
+            imported.flatMap(_.tags(_.Event)) | { if (game.imported) "Import" else eventOf(game) }
+          ).some,
           Tag(_.Site, gameUrl(game.id)).some,
           Tag(_.Date, importedDate | Tag.UTCDate.format.print(game.createdAt)).some,
-          Tag(_.Round, imported.flatMap(_.tags(_.Round)) | "-").some,
+          imported.flatMap(_.tags(_.Round)).map(Tag(_.Round, _)),
           Tag(_.White, player(game.whitePlayer, wu)).some,
           Tag(_.Black, player(game.blackPlayer, bu)).some,
           Tag(_.Result, result(game)).some,
@@ -102,6 +115,8 @@ final class PgnDump(
           bu.flatMap(_.title).map { t =>
             Tag(_.BlackTitle, t)
           },
+          teams.map { t => Tag("WhiteTeam", t.white) },
+          teams.map { t => Tag("BlackTeam", t.black) },
           Tag(_.Variant, game.variant.name.capitalize).some,
           Tag.timeControl(game.clock.map(_.config)).some,
           Tag(_.ECO, game.opening.fold("?")(_.opening.eco)).some,
@@ -121,12 +136,12 @@ final class PgnDump(
           ).some
         ).flatten ::: customStartPosition(game.variant).??(
           List(
-            Tag(_.FEN, initialFen.fold("?")(_.value)),
+            Tag(_.FEN, (initialFen | Forsyth.initial).value),
             Tag("SetUp", "1")
           )
         )
       }
-  }
+    }
 
   private def makeTurns(
       moves: Seq[String],
@@ -134,24 +149,23 @@ final class PgnDump(
       clocks: Vector[Centis],
       startColor: Color
   ): List[chessPgn.Turn] =
-    (moves grouped 2).zipWithIndex.toList map {
-      case (moves, index) =>
-        val clockOffset = startColor.fold(0, 1)
-        chessPgn.Turn(
-          number = index + from,
-          white = moves.headOption filter (".." !=) map { san =>
-            chessPgn.Move(
-              san = san,
-              secondsLeft = clocks lift (index * 2 - clockOffset) map (_.roundSeconds)
-            )
-          },
-          black = moves lift 1 map { san =>
-            chessPgn.Move(
-              san = san,
-              secondsLeft = clocks lift (index * 2 + 1 - clockOffset) map (_.roundSeconds)
-            )
-          }
-        )
+    (moves grouped 2).zipWithIndex.toList map { case (moves, index) =>
+      val clockOffset = startColor.fold(0, 1)
+      chessPgn.Turn(
+        number = index + from,
+        white = moves.headOption filter (".." !=) map { san =>
+          chessPgn.Move(
+            san = san,
+            secondsLeft = clocks lift (index * 2 - clockOffset) map (_.roundSeconds)
+          )
+        },
+        black = moves lift 1 map { san =>
+          chessPgn.Move(
+            san = san,
+            secondsLeft = clocks lift (index * 2 + 1 - clockOffset) map (_.roundSeconds)
+          )
+        }
+      )
     } filterNot (_.isEmpty)
 }
 
@@ -163,7 +177,9 @@ object PgnDump {
       tags: Boolean = true,
       evals: Boolean = true,
       opening: Boolean = true,
-      literate: Boolean = false
+      literate: Boolean = false,
+      pgnInJson: Boolean = false,
+      delayMoves: Int = 0
   )
 
   def result(game: Game) =

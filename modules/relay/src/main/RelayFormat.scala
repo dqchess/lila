@@ -2,24 +2,25 @@ package lila.relay
 
 import io.lemonlabs.uri._
 import play.api.libs.json._
-import play.api.libs.ws.WSClient
+import play.api.libs.ws.StandaloneWSClient
 import scala.concurrent.duration._
 
-import com.github.blemale.scaffeine.{ LoadingCache, Scaffeine }
 import lila.study.MultiPgn
+import lila.memo.CacheApi
+import lila.memo.CacheApi._
 
-final private class RelayFormatApi(ws: WSClient)(implicit ec: scala.concurrent.ExecutionContext) {
+final private class RelayFormatApi(ws: StandaloneWSClient, cacheApi: CacheApi)(implicit
+    ec: scala.concurrent.ExecutionContext
+) {
 
   import RelayFormat._
   import Relay.Sync.UpstreamWithRound
 
-  private val cache: LoadingCache[UpstreamWithRound, Fu[RelayFormat]] = Scaffeine()
-    .expireAfterWrite(10 minutes)
-    .build { (upstream: UpstreamWithRound) =>
-      guessFormat(upstream) addFailureEffect { _ =>
-        cache.invalidate(upstream)
-      }
-    }
+  private val cache = cacheApi[UpstreamWithRound, RelayFormat](8, "relay.format") {
+    _.refreshAfterWrite(10 minutes)
+      .expireAfterAccess(20 minutes)
+      .buildAsyncFuture(guessFormat)
+  }
 
   def get(upstream: UpstreamWithRound): Fu[RelayFormat] = cache get upstream
 
@@ -30,15 +31,16 @@ final private class RelayFormatApi(ws: WSClient)(implicit ec: scala.concurrent.E
     val originalUrl = Url parse upstream.url
 
     // http://view.livechesscloud.com/ed5fb586-f549-4029-a470-d590f8e30c76
-    def guessLcc(url: Url): Fu[Option[RelayFormat]] = url.toString match {
-      case Relay.Sync.LccRegex(id) =>
-        guessManyFiles(
-          Url.parse(
-            s"http://1.pool.livechesscloud.com/get/$id/round-${upstream.round | 1}/index.json"
+    def guessLcc(url: Url): Fu[Option[RelayFormat]] =
+      url.toString match {
+        case Relay.Sync.LccRegex(id) =>
+          guessManyFiles(
+            Url.parse(
+              s"http://1.pool.livechesscloud.com/get/$id/round-${upstream.round | 1}/index.json"
+            )
           )
-        )
-      case _ => fuccess(none)
-    }
+        case _ => fuccess(none)
+      }
 
     def guessSingleFile(url: Url): Fu[Option[RelayFormat]] =
       lila.common.Future.find(
@@ -59,18 +61,16 @@ final private class RelayFormatApi(ws: WSClient)(implicit ec: scala.concurrent.E
           val pgnUrl  = (n: Int) => pgnDoc(replaceLastPart(index, s"game-$n.pgn"))
           looksLikeJson(jsonUrl(1).url).map(_ option jsonUrl) orElse
             looksLikePgn(pgnUrl(1).url).map(_ option pgnUrl) dmap2 {
-            ManyFiles(index, _)
-          }
+              ManyFiles(index, _)
+            }
         }
       }
 
     guessLcc(originalUrl) orElse
       guessSingleFile(originalUrl) orElse
-      guessManyFiles(originalUrl) orFail "Cannot find any game there"
+      guessManyFiles(originalUrl) orFail "No games found, check your source URL"
   } addEffect { format =>
     logger.info(s"guessed format of $upstream: $format")
-  } addFailureEffect { err =>
-    logger.info(s"can't guess format of $upstream: $err")
   }
 
   private def httpGet(url: Url): Fu[Option[String]] =
@@ -82,9 +82,10 @@ final private class RelayFormatApi(ws: WSClient)(implicit ec: scala.concurrent.E
         case _                        => none
       }
 
-  private def looksLikePgn(body: String): Boolean = MultiPgn.split(body, 1).value.headOption ?? { pgn =>
-    lila.study.PgnImport(pgn, Nil).isSuccess
-  }
+  private def looksLikePgn(body: String): Boolean =
+    MultiPgn.split(body, 1).value.headOption ?? { pgn =>
+      lila.study.PgnImport(pgn, Nil).isValid
+    }
   private def looksLikePgn(url: Url): Fu[Boolean] = httpGet(url).map { _ exists looksLikePgn }
 
   private def looksLikeJson(body: String): Boolean =

@@ -1,7 +1,5 @@
 package lila.report
 
-import lila.user.{ Title, User }
-
 final private class ReportScore(
     getAccuracy: ReporterId => Fu[Option[Accuracy]]
 )(implicit ec: scala.concurrent.ExecutionContext) {
@@ -15,29 +13,22 @@ final private class ReportScore(
     } map
       impl.fixedAutoCommPrintScore(candidate) map
       impl.commFlagScore(candidate) map { score =>
-      candidate scored Report.Score(score atLeast 5 atMost 100)
-    }
+        candidate scored Report.Score(score atLeast 5 atMost 100)
+      }
 
   private object impl {
 
-    val baseScore               = 30
+    val baseScore               = 20
     val baseScoreAboveThreshold = 50
 
-    def accuracyScore(a: Option[Accuracy]): Double = a ?? { accuracy =>
-      (accuracy.value - 50) * 0.7d
-    }
+    def accuracyScore(a: Option[Accuracy]): Double =
+      a ?? { accuracy =>
+        (accuracy.value - 50) * 0.8d
+      }
 
-    def reporterScore(r: Reporter) =
-      titleScore(r.user.title) + flagScore(r.user)
+    def reporterScore(r: Reporter) = r.user.lameOrTroll ?? -30d
 
-    def titleScore(title: Option[Title]) =
-      title.isDefined ?? 30d
-
-    def flagScore(user: User) =
-      user.lameOrTroll ?? -30d
-
-    def autoScore(candidate: Report.Candidate) =
-      candidate.isAutomatic ?? 20d
+    def autoScore(candidate: Report.Candidate) = candidate.isAutomatic ?? 25d
 
     // https://github.com/ornicar/lila/issues/4093
     // https://github.com/ornicar/lila/issues/4587

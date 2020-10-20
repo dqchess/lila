@@ -20,8 +20,13 @@ final class Env(
     cacheApi: lila.memo.CacheApi,
     prefApi: lila.pref.PrefApi,
     relationApi: lila.relation.RelationApi,
-    remoteSocketApi: lila.socket.RemoteSocket
-)(implicit ec: scala.concurrent.ExecutionContext, system: akka.actor.ActorSystem) {
+    remoteSocketApi: lila.socket.RemoteSocket,
+    baseUrl: BaseUrl
+)(implicit
+    ec: scala.concurrent.ExecutionContext,
+    system: akka.actor.ActorSystem,
+    mode: play.api.Mode
+) {
 
   private lazy val maxPlaying = appConfig.get[Max]("setup.max_playing")
 
@@ -46,6 +51,6 @@ final class Env(
   lazy val jsonView = wire[JsonView]
 
   system.scheduler.scheduleWithFixedDelay(10 seconds, 3 seconds) { () =>
-    api.sweep
+    api.sweep.unit
   }
 }

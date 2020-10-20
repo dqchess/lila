@@ -7,6 +7,7 @@ private[game] case class Metadata(
     source: Option[Source],
     pgnImport: Option[PgnImport],
     tournamentId: Option[String],
+    swissId: Option[String],
     simulId: Option[String],
     analysed: Boolean
 ) {
@@ -20,7 +21,7 @@ private[game] case class Metadata(
 
 private[game] object Metadata {
 
-  val empty = Metadata(None, None, None, None, false)
+  val empty = Metadata(None, None, None, None, None, analysed = false)
 }
 
 case class PgnImport(
@@ -33,27 +34,29 @@ case class PgnImport(
 
 object PgnImport {
 
-  def hash(pgn: String) = ByteArray {
-    MessageDigest getInstance "MD5" digest {
-      pgn.linesIterator
-        .map(_.replace(" ", ""))
-        .filter(_.nonEmpty)
-        .to(List)
-        .mkString("\n")
-        .getBytes("UTF-8")
-    } take 12
-  }
+  def hash(pgn: String) =
+    ByteArray {
+      MessageDigest getInstance "MD5" digest {
+        pgn.linesIterator
+          .map(_.replace(" ", ""))
+          .filter(_.nonEmpty)
+          .to(List)
+          .mkString("\n")
+          .getBytes("UTF-8")
+      } take 12
+    }
 
   def make(
       user: Option[String],
       date: Option[String],
       pgn: String
-  ) = PgnImport(
-    user = user,
-    date = date,
-    pgn = pgn,
-    h = hash(pgn).some
-  )
+  ) =
+    PgnImport(
+      user = user,
+      date = date,
+      pgn = pgn,
+      h = hash(pgn).some
+    )
 
   import reactivemongo.api.bson.Macros
   import ByteArray.ByteArrayBSONHandler

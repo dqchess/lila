@@ -5,42 +5,47 @@ import io.lettuce.core._
 import io.lettuce.core.pubsub._
 import scala.concurrent.Future
 
-import lila.hub.actorApi.map.Tell
+import lila.hub.actorApi.map.{ Tell, TellAll }
 import lila.hub.actorApi.round.{ FishnetPlay, FishnetStart }
-import lila.common.Bus
+import lila.common.{ Bus, Lilakka }
+import akka.actor.CoordinatedShutdown
 
 final class FishnetRedis(
     client: RedisClient,
     chanIn: String,
     chanOut: String,
-    lifecycle: play.api.inject.ApplicationLifecycle
+    shutdown: CoordinatedShutdown
 )(implicit ec: scala.concurrent.ExecutionContext) {
 
   val connIn  = client.connectPubSub()
   val connOut = client.connectPubSub()
 
-  def request(work: Work.Move): Unit = connOut.async.publish(chanOut, writeWork(work))
+  private var stopping = false
+
+  def request(work: Work.Move): Unit =
+    if (!stopping) connOut.async.publish(chanOut, writeWork(work)).unit
 
   connIn.async.subscribe(chanIn)
 
   connIn.addListener(new RedisPubSubAdapter[String, String] {
-    override def message(chan: String, msg: String): Unit = msg split ' ' match {
+    override def message(chan: String, msg: String): Unit =
+      msg split ' ' match {
 
-      case Array("start") => Bus.publish(FishnetStart, "roundMapTellAll")
+        case Array("start") => Bus.publish(TellAll(FishnetStart), "roundSocket")
 
-      case Array(gameId, plyS, uci) =>
-        for {
-          move <- Uci(uci)
-          ply  <- plyS.toIntOption
-        } Bus.publish(Tell(gameId, FishnetPlay(move, ply)), "roundMapTell")
-      case _ =>
-    }
+        case Array(gameId, plyS, uci) =>
+          for {
+            move <- Uci(uci)
+            ply  <- plyS.toIntOption
+          } Bus.publish(Tell(gameId, FishnetPlay(move, ply)), "roundSocket")
+        case _ =>
+      }
   })
 
-  lifecycle.addStopHook { () =>
+  Lilakka.shutdown(shutdown, _.PhaseServiceUnbind, "Stopping the fishnet redis pool") { () =>
     Future {
+      stopping = true
       client.shutdown()
-      logger.info("Stopped the fishnet redis pool.")
     }
   }
 

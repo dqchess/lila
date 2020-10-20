@@ -12,17 +12,18 @@ final private class Moretimer(
 )(implicit ec: scala.concurrent.ExecutionContext) {
 
   // pov of the player giving more time
-  def apply(pov: Pov): Fu[Option[Progress]] = IfAllowed(pov.game) {
-    (pov.game moretimeable !pov.color) ?? {
-      if (pov.game.hasClock) give(pov.game, List(!pov.color), duration).some
-      else
-        pov.game.hasCorrespondenceClock option {
-          messenger.system(pov.game, (_.untranslated(s"${!pov.color} gets more time")))
-          val p = pov.game.correspondenceGiveTime
-          p.game.correspondenceClock.map(Event.CorrespondenceClock.apply).fold(p)(p + _)
-        }
+  def apply(pov: Pov): Fu[Option[Progress]] =
+    IfAllowed(pov.game) {
+      (pov.game moretimeable !pov.color) ?? {
+        if (pov.game.hasClock) give(pov.game, List(!pov.color), duration).some
+        else
+          pov.game.hasCorrespondenceClock option {
+            messenger.volatile(pov.game, s"${!pov.color} gets more time")
+            val p = pov.game.correspondenceGiveTime
+            p.game.correspondenceClock.map(Event.CorrespondenceClock.apply).fold(p)(p + _)
+          }
+      }
     }
-  }
 
   def isAllowedIn(game: Game): Fu[Boolean] =
     if (game.isMandatory) fuFalse
@@ -31,11 +32,11 @@ final private class Moretimer(
   private[round] def give(game: Game, colors: List[Color], duration: MoretimeDuration): Progress =
     game.clock.fold(Progress(game)) { clock =>
       val centis = duration.value.toCentis
-      val newClock = colors.foldLeft(clock) {
-        case (c, color) => c.giveTime(color, centis)
+      val newClock = colors.foldLeft(clock) { case (c, color) =>
+        c.giveTime(color, centis)
       }
       colors.foreach { c =>
-        messenger.system(game, (_.untranslated(s"$c + ${duration.value.toSeconds} seconds")))
+        messenger.volatile(game, s"$c + ${duration.value.toSeconds} seconds")
       }
       (game withClock newClock) ++ colors.map { Event.ClockInc(_, centis) }
     }

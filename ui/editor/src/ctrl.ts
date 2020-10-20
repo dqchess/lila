@@ -32,7 +32,7 @@ export default class EditorCtrl {
     this.cfg = cfg;
     this.options = cfg.options || {};
 
-    this.trans = window.lichess.trans(this.cfg.i18n);
+    this.trans = lichess.trans(this.cfg.i18n);
 
     this.selected = prop('pointer');
 
@@ -49,14 +49,13 @@ export default class EditorCtrl {
       cfg.positions.forEach(p => p.epd = p.fen.split(' ').splice(0, 4).join(' '));
     }
 
-    window.Mousetrap.bind('f', (e: Event) => {
-      e.preventDefault();
+    window.Mousetrap.bind('f', () => {
       if (this.chessground) this.chessground.toggleOrientation();
       redraw();
     });
 
     this.castlingToggles = { K: false, Q: false, k: false, q: false };
-    this.rules = 'chess';
+    this.rules = (!this.cfg.embed && window.history.state && window.history.state.rules) ? window.history.state.rules : 'chess';
 
     this.redraw = () => {};
     this.setFen(cfg.fen);
@@ -66,8 +65,9 @@ export default class EditorCtrl {
   onChange(): void {
     const fen = this.getFen();
     if (!this.cfg.embed) {
-      if (fen == INITIAL_FEN) window.history.replaceState(null, '', '/editor');
-      else window.history.replaceState(null, '', this.makeUrl('/editor/', fen));
+      const state = { rules: this.rules };
+      if (fen == INITIAL_FEN) window.history.replaceState(state, '', '/editor');
+      else window.history.replaceState(state, '', this.makeUrl('/editor/', fen));
     }
     this.options.onChange && this.options.onChange(fen);
     this.redraw();

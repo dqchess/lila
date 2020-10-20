@@ -13,26 +13,23 @@ object show {
 
   def apply(puzzle: lila.puzzle.Puzzle, data: JsObject, pref: JsObject)(implicit ctx: Context) =
     views.html.base.layout(
-      title = trans.training.txt(),
+      title = trans.puzzles.txt(),
       moreCss = cssTag("puzzle"),
       moreJs = frag(
-        jsTag("vendor/sparkline.min.js"),
-        jsAt(s"compiled/lichess.puzzle${isProd ?? (".min")}.js"),
-        embedJsUnsafe(s"""
-lichess = lichess || {};
-lichess.puzzle = ${safeJsonValue(
+        jsModule("puzzle"),
+        embedJsUnsafeLoadThen(s"""LichessPuzzle(${safeJsonValue(
           Json.obj(
             "data" -> data,
             "pref" -> pref,
             "i18n" -> bits.jsI18n()
           )
-        )}""")
+        )})""")
       ),
       csp = defaultCsp.withWebAssembly.some,
       chessground = false,
       openGraph = lila.app.ui
         .OpenGraph(
-          image = cdnUrl(routes.Export.puzzlePng(puzzle.id).url).some,
+          image = cdnUrl(routes.Export.puzzleThumbnail(puzzle.id).url).some,
           title = s"Chess tactic #${puzzle.id} - ${puzzle.color.name.capitalize} to play",
           url = s"$netBaseUrl${routes.Puzzle.show(puzzle.id).url}",
           description = s"Lichess tactic trainer: " + puzzle.color

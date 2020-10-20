@@ -10,30 +10,28 @@ final class Cached(
     memberRepo: MemberRepo,
     requestRepo: RequestRepo,
     cacheApi: lila.memo.CacheApi
-)(implicit ec: scala.concurrent.ExecutionContext, system: akka.actor.ActorSystem) {
+)(implicit ec: scala.concurrent.ExecutionContext) {
 
-  val nameCache = new Syncache[String, Option[String]](
+  val nameCache = cacheApi.sync[String, Option[String]](
     name = "team.name",
     initialCapacity = 4096,
     compute = teamRepo.name,
     default = _ => none,
     strategy = Syncache.WaitAfterUptime(20 millis),
-    expireAfter = Syncache.ExpireAfterAccess(30 minutes),
-    logger = logger
+    expireAfter = Syncache.ExpireAfterAccess(20 minutes)
   )
 
   def blockingTeamName(id: Team.ID) = nameCache sync id
 
   def preloadSet = nameCache preloadSet _
 
-  private val teamIdsCache = new Syncache[User.ID, Team.IdsStr](
+  private val teamIdsCache = cacheApi.sync[User.ID, Team.IdsStr](
     name = "team.ids",
     initialCapacity = 65536,
-    compute = u => memberRepo.teamIdsByUser(u).dmap(Team.IdsStr.apply),
+    compute = u => memberRepo.teamIdsByUser(u).dmap(ids => Team.IdsStr(ids take 100)),
     default = _ => Team.IdsStr.empty,
     strategy = Syncache.WaitAfterUptime(20 millis),
-    expireAfter = Syncache.ExpireAfterWrite(1 hour),
-    logger = logger
+    expireAfter = Syncache.ExpireAfterWrite(1 hour)
   )
 
   def syncTeamIds                  = teamIdsCache sync _
@@ -42,12 +40,21 @@ final class Cached(
 
   def invalidateTeamIds = teamIdsCache invalidate _
 
-  val nbRequests = cacheApi[User.ID, Int]("team.nbRequests") {
-    _.expireAfterAccess(30 minutes)
-      .initialCapacity(32768)
+  val nbRequests = cacheApi[User.ID, Int](32768, "team.nbRequests") {
+    _.expireAfterAccess(25 minutes)
       .maximumSize(65536)
       .buildAsyncFuture[User.ID, Int] { userId =>
-        teamRepo teamIdsByCreator userId flatMap requestRepo.countByTeams,
+        teamIds(userId) flatMap { ids =>
+          ids.value.nonEmpty ?? teamRepo.countRequestsOfLeader(userId, requestRepo.coll)
+        }
       }
   }
+
+  val leaders = cacheApi[Team.ID, Set[User.ID]](128, "team.leaders") {
+    _.expireAfterWrite(1 minute)
+      .buildAsyncFuture(teamRepo.leadersOf)
+  }
+
+  def isLeader(teamId: Team.ID, userId: User.ID): Fu[Boolean] =
+    leaders.get(teamId).dmap(_ contains userId)
 }

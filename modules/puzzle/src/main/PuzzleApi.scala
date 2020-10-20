@@ -20,17 +20,18 @@ final private[puzzle] class PuzzleApi(
   object puzzle {
 
     def find(id: PuzzleId): Fu[Option[Puzzle]] =
-      puzzleColl(_.ext.find($doc(F.id -> id)).one[Puzzle])
+      puzzleColl(_.find($doc(F.id -> id)).one[Puzzle])
 
     def findMany(ids: List[PuzzleId]): Fu[List[Option[Puzzle]]] =
       puzzleColl(_.optionsByOrderedIds[Puzzle, PuzzleId](ids)(_.id))
 
-    def latest(nb: Int): Fu[List[Puzzle]] = puzzleColl {
-      _.ext
-        .find($empty)
-        .sort($doc(F.date -> -1))
-        .list[Puzzle](nb)
-    }
+    def latest(nb: Int): Fu[List[Puzzle]] =
+      puzzleColl {
+        _.find($empty)
+          .sort($doc(F.date -> -1))
+          .cursor[Puzzle]()
+          .list(nb)
+      }
 
     val cachedLastId = cacheApi.unit[Int] {
       _.refreshAfterWrite(1 day)
@@ -39,22 +40,15 @@ final private[puzzle] class PuzzleApi(
         }
     }
 
-    // def export(nb: Int): Fu[List[Puzzle]] = List(true, false).map { mate =>
-    //   puzzleColl {
-    //     _.ext.find($doc(F.mate -> mate))
-    //       .sort($doc(F.voteRatio -> -1))
-    //       .list[Puzzle](nb / 2)
-    //   }
-    // }.sequenceFu.map(_.flatten)
-
-    def disable(id: PuzzleId): Funit = puzzleColl {
-      _.update
-        .one(
-          $id(id),
-          $doc("$set" -> $doc(F.vote -> AggregateVote.disable))
-        )
-        .void
-    }
+    def disable(id: PuzzleId): Funit =
+      puzzleColl {
+        _.update
+          .one(
+            $id(id),
+            $doc("$set" -> $doc(F.vote -> AggregateVote.disable))
+          )
+          .void
+      }
   }
 
   object round {
@@ -63,54 +57,58 @@ final private[puzzle] class PuzzleApi(
 
     def upsert(a: Round) = roundColl(_.update.one($id(a.id), a, upsert = true))
 
-    def reset(user: User) = roundColl {
-      _.delete.one(
-        $doc(
-          Round.BSONFields.id $startsWith s"${user.id}:"
+    def addDenormalizedUser(a: Round, user: User) = roundColl(_.updateField($id(a.id), "u", user.id).void)
+
+    def reset(user: User) =
+      roundColl {
+        _.delete.one(
+          $doc(
+            Round.BSONFields.id $startsWith s"${user.id}:"
+          )
         )
-      )
-    }
+      }
   }
 
   object vote {
 
-    def value(id: PuzzleId, user: User): Fu[Option[Boolean]] = voteColl {
-      _.primitiveOne[Boolean]($id(Vote.makeId(id, user.id)), "v")
-    }
+    def value(id: PuzzleId, user: User): Fu[Option[Boolean]] =
+      voteColl {
+        _.primitiveOne[Boolean]($id(Vote.makeId(id, user.id)), "v")
+      }
 
-    def find(id: PuzzleId, user: User): Fu[Option[Vote]] = voteColl {
-      _.byId[Vote](Vote.makeId(id, user.id))
-    }
+    def find(id: PuzzleId, user: User): Fu[Option[Vote]] =
+      voteColl {
+        _.byId[Vote](Vote.makeId(id, user.id))
+      }
 
     def update(id: PuzzleId, user: User, v1: Option[Vote], v: Boolean): Fu[(Puzzle, Vote)] =
-      puzzle find id flatMap {
-        case None => fufail(s"Can't vote for non existing puzzle ${id}")
-        case Some(p1) =>
-          val (p2, v2) = v1 match {
-            case Some(from) =>
-              (
-                (p1 withVote (_.change(from.value, v))),
-                from.copy(v = v)
-              )
-            case None =>
-              (
-                (p1 withVote (_ add v)),
-                Vote(Vote.makeId(id, user.id), v)
-              )
-          }
-          voteColl {
-            _.update.one(
+      puzzle find id orFail s"Can't vote for non existing puzzle $id" flatMap { p1 =>
+        val (p2, v2) = v1 match {
+          case Some(from) =>
+            (
+              (p1 withVote (_.change(from.value, v))),
+              from.copy(v = v)
+            )
+          case None =>
+            (
+              (p1 withVote (_ add v)),
+              Vote(Vote.makeId(id, user.id), v)
+            )
+        }
+        voteColl {
+          _.update
+            .one(
               $id(v2.id),
               $set("v" -> v),
               upsert = true
             )
-          } zip
-            puzzleColl {
-              _.update.one(
-                $id(p2.id),
-                $set(F.vote -> p2.vote)
-              )
-            } inject (p2 -> v2)
+            .void
+            .recover(lila.db.recoverDuplicateKey { _ => () })
+        } zip
+          puzzleColl {
+            _.update
+              .one($id(p2.id), $set(F.vote -> p2.vote))
+          } inject (p2 -> v2)
       }
   }
 
@@ -127,10 +125,11 @@ final private[puzzle] class PuzzleApi(
         h.current | h.last
       }
 
-    private[puzzle] def solved(user: User, id: PuzzleId): Funit = head find user flatMap { headOption =>
-      set {
-        PuzzleHead(user.id, none, headOption.fold(id)(head => id atLeast head.last))
+    private[puzzle] def solved(user: User, id: PuzzleId): Funit =
+      head find user flatMap { headOption =>
+        set {
+          PuzzleHead(user.id, none, headOption.fold(id)(head => id atLeast head.last))
+        }
       }
-    }
   }
 }

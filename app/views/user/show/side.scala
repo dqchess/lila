@@ -19,11 +19,11 @@ object side {
     def showNonEmptyPerf(perf: lila.rating.Perf, perfType: PerfType) =
       perf.nonEmpty option showPerf(perf, perfType)
 
-    def showPerf(perf: lila.rating.Perf, perfType: PerfType, name: Option[String] = none) = {
+    def showPerf(perf: lila.rating.Perf, perfType: PerfType) = {
       val isGame = lila.rating.PerfType.isGame(perfType)
       a(
         dataIcon := perfType.iconChar,
-        title := perfType.title,
+        title := perfType.desc,
         cls := List(
           "empty"  -> perf.isEmpty,
           "game"   -> isGame,
@@ -31,12 +31,14 @@ object side {
         ),
         href := isGame option routes.User.perfStat(u.username, perfType.key).url,
         span(
-          h3(name.getOrElse(perfType.name).toUpperCase),
+          h3(perfType.trans),
           st.rating(
-            strong(
-              perf.glicko.intRating,
-              perf.provisional option "?"
-            ),
+            if (perf.glicko.clueless) strong("?")
+            else
+              strong(
+                perf.glicko.intRating,
+                perf.provisional option "?"
+              ),
             " ",
             ratingProgress(perf.progress),
             " ",

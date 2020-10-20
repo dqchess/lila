@@ -101,7 +101,7 @@ export function view(root: AnalyseCtrl): VNode {
         return c.by && c.by.id && c.by.id === ctrl.root.opts.userId;
       });
     el.value = mine ? mine.text : '';
-    if (ctrl.opening() || ctrl.focus()) window.lichess.raf(() => el.focus());
+    if (ctrl.opening() || ctrl.focus()) requestAnimationFrame(() => el.focus());
     ctrl.opening(false);
   }
 
@@ -121,9 +121,7 @@ export function view(root: AnalyseCtrl): VNode {
               setupTextarea(vnode);
               const el = vnode.elm as HTMLInputElement;
               function onChange() {
-                setTimeout(function() {
-                  ctrl.submit(el.value);
-                }, 50);
+                setTimeout(() => ctrl.submit(el.value), 50);
               }
               el.onkeyup = el.onpaste = onChange;
               el.onfocus = function() {

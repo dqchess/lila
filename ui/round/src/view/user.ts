@@ -37,11 +37,11 @@ export function userHtml(ctrl: RoundController, player: Player, position: Positi
         attrs: {
           'data-pt-pos': 's',
           href: '/@/' + user.username,
-          target: ctrl.isPlaying() ? '_blank' : '_self'
+          ...(ctrl.isPlaying() ? {target: '_blank', rel: 'noopener'} : {}),
         }
       }, user.title ? [
         h(
-          'span.title',
+          'span.utitle',
           user.title == 'BOT' ? { attrs: {'data-bot': true } } : {},
           user.title
         ), ' ', user.username
@@ -51,7 +51,7 @@ export function userHtml(ctrl: RoundController, player: Player, position: Positi
       player.engine ? h('span', {
         attrs: {
           'data-icon': 'j',
-          title: ctrl.trans.noarg('thisPlayerUsesChessComputerAssistance')
+          title: ctrl.noarg('thisAccountViolatedTos')
         }
       }) : null
     ]);

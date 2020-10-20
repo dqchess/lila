@@ -1,3 +1,4 @@
+import { Outcome } from 'chessops/types';
 import { Prop } from 'common';
 import { StoredProp, StoredBooleanProp } from 'common/storage';
 
@@ -68,11 +69,12 @@ export interface CevalCtrl {
   variant: Variant;
   setHovering: (fen: string, uci?: string) => void;
   multiPv: StoredProp<number>;
-  start: (path: string, steps: Step[], threatMode: boolean, deeper: boolean) => void;
+  start: (path: string, steps: Step[], threatMode?: boolean, deeper?: boolean) => void;
   stop(): void;
   threads: StoredProp<number> | undefined;
   hashSize: StoredProp<number> | undefined;
   maxThreads: number;
+  maxHashSize: number;
   infinite: StoredBooleanProp;
   hovering: Prop<Hovering | null>;
   toggle(): void;
@@ -85,10 +87,10 @@ export interface CevalCtrl {
 export interface ParentCtrl {
   getCeval(): CevalCtrl;
   nextNodeBest(): string | undefined;
-  disableThreatMode?: Prop<Boolean>;
+  disableThreatMode?: Prop<boolean>;
   toggleThreatMode(): void;
   toggleCeval(): void;
-  gameOver: (node?: Tree.Node) => 'draw' | 'checkmate' | false;
+  outcome(): Outcome | undefined;
   mandatoryCeval?: Prop<boolean>;
   showEvalGauge: Prop<boolean>;
   currentEvals(): NodeEvals;

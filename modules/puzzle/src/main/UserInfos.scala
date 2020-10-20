@@ -8,8 +8,8 @@ import lila.user.User
 
 case class UserInfos(user: User, history: List[Round])
 
-final class UserInfosApi(roundColl: AsyncColl, currentPuzzleId: User => Fu[Option[PuzzleId]])(
-    implicit ec: scala.concurrent.ExecutionContext
+final class UserInfosApi(roundColl: AsyncColl, currentPuzzleId: User => Fu[Option[PuzzleId]])(implicit
+    ec: scala.concurrent.ExecutionContext
 ) {
 
   private val historySize = 15
@@ -21,7 +21,7 @@ final class UserInfosApi(roundColl: AsyncColl, currentPuzzleId: User => Fu[Optio
     for {
       current <- currentPuzzleId(user)
       rounds  <- fetchRounds(user.id, current)
-    } yield new UserInfos(user, rounds)
+    } yield UserInfos(user, rounds)
 
   private def fetchRounds(userId: User.ID, currentPuzzleId: Option[PuzzleId]): Fu[List[Round]] = {
     val idSelector = $doc("$regex" -> BSONRegex(s"^$userId:", "")) ++
@@ -29,10 +29,10 @@ final class UserInfosApi(roundColl: AsyncColl, currentPuzzleId: User => Fu[Optio
         $doc("$lte" -> s"$userId:${Round encode id}")
       }
     roundColl {
-      _.ext
-        .find($doc(Round.BSONFields.id -> idSelector))
+      _.find($doc(Round.BSONFields.id -> idSelector))
         .sort($sort desc Round.BSONFields.id)
-        .list[Round](historySize atLeast chartSize)
+        .cursor[Round]()
+        .list(historySize atLeast chartSize)
         .dmap(_.reverse)
     }
   }

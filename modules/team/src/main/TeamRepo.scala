@@ -6,43 +6,81 @@ import reactivemongo.api._
 import reactivemongo.api.bson._
 
 import lila.db.dsl._
+import lila.hub.LeaderTeam
 import lila.user.User
 
 final class TeamRepo(val coll: Coll)(implicit ec: scala.concurrent.ExecutionContext) {
 
   import BSONHandlers._
 
+  private val lightProjection = $doc("name" -> true).some
+
+  def byId(id: Team.ID) = coll.byId[Team](id)
+
   def byOrderedIds(ids: Seq[Team.ID]) = coll.byOrderedIds[Team, Team.ID](ids)(_.id)
 
-  def owned(id: Team.ID, createdBy: User.ID): Fu[Option[Team]] =
-    coll.one[Team]($id(id) ++ $doc("createdBy" -> createdBy))
+  def byLeader(id: Team.ID, leaderId: User.ID): Fu[Option[Team]] =
+    coll.one[Team]($id(id) ++ $doc("leaders" -> leaderId))
 
-  def teamIdsByCreator(userId: User.ID): Fu[List[String]] =
-    coll.distinctEasy[String, List]("_id", $doc("createdBy" -> userId))
+  def lightsByLeader(leaderId: User.ID): Fu[List[LeaderTeam]] =
+    coll
+      .find($doc("leaders" -> leaderId) ++ enabledSelect, lightProjection)
+      .sort(sortPopular)
+      .cursor[LeaderTeam](ReadPreference.secondaryPreferred)
+      .list(100)
 
-  def creatorOf(teamId: Team.ID): Fu[Option[User.ID]] =
-    coll.primitiveOne[User.ID]($id(teamId), "_id")
+  def enabled(id: Team.ID) = coll.one[Team]($id(id) ++ enabledSelect)
+
+  def byIdsSortPopular(ids: Seq[Team.ID]): Fu[List[Team]] =
+    coll
+      .find($inIds(ids))
+      .sort(sortPopular)
+      .cursor[Team](ReadPreference.secondaryPreferred)
+      .list(100)
+
+  def enabledTeamsByLeader(userId: User.ID): Fu[List[Team]] =
+    coll
+      .find($doc("leaders" -> userId) ++ enabledSelect)
+      .sort(sortPopular)
+      .cursor[Team](ReadPreference.secondaryPreferred)
+      .list(100)
+
+  def enabledTeamIdsByLeader(userId: User.ID): Fu[List[Team.ID]] =
+    coll
+      .primitive[Team.ID](
+        $doc("leaders" -> userId) ++ enabledSelect,
+        sortPopular,
+        "_id"
+      )
+
+  def leadersOf(teamId: Team.ID): Fu[Set[User.ID]] =
+    coll.primitiveOne[Set[User.ID]]($id(teamId), "leaders").dmap(~_)
+
+  def setLeaders(teamId: String, leaders: Set[User.ID]): Funit =
+    coll.updateField($id(teamId), "leaders", leaders).void
+
+  def leads(teamId: String, userId: User.ID) =
+    coll.exists($id(teamId) ++ $doc("leaders" -> userId))
 
   def name(id: String): Fu[Option[String]] =
     coll.primitiveOne[String]($id(id), "name")
 
-  def userHasCreatedSince(userId: String, duration: Period): Fu[Boolean] =
-    coll.exists(
+  private[team] def countCreatedSince(userId: String, duration: Period): Fu[Int] =
+    coll.countSel(
       $doc(
         "createdAt" $gt DateTime.now.minus(duration),
         "createdBy" -> userId
       )
     )
 
-  def ownerOf(teamId: String): Fu[Option[String]] =
-    coll.primitiveOne[String]($id(teamId), "createdBy")
-
   def incMembers(teamId: String, by: Int): Funit =
     coll.update.one($id(teamId), $inc("nbMembers" -> by)).void
 
-  def enable(team: Team) = coll.updateField($id(team.id), "enabled", true)
+  def enable(team: Team): Funit =
+    coll.updateField($id(team.id), "enabled", true).void
 
-  def disable(team: Team) = coll.updateField($id(team.id), "enabled", false)
+  def disable(team: Team): Funit =
+    coll.updateField($id(team.id), "enabled", false).void
 
   def addRequest(teamId: String, request: Request): Funit =
     coll.update
@@ -52,15 +90,34 @@ final class TeamRepo(val coll: Coll)(implicit ec: scala.concurrent.ExecutionCont
       )
       .void
 
-  def changeOwner(teamId: String, newOwner: User.ID) =
-    coll.updateField($id(teamId), "createdBy", newOwner)
-
   def cursor =
-    coll.ext
-      .find($doc("enabled" -> true))
+    coll
+      .find(enabledSelect)
       .cursor[Team](ReadPreference.secondaryPreferred)
 
-  val enabledQuery = $doc("enabled" -> true)
+  def countRequestsOfLeader(userId: User.ID, requestColl: Coll): Fu[Int] =
+    coll
+      .aggregateOne(readPreference = ReadPreference.secondaryPreferred) { implicit framework =>
+        import framework._
+        Match($doc("leaders" -> userId)) -> List(
+          PipelineOperator(
+            $doc(
+              "$lookup" -> $doc(
+                "from"         -> requestColl.name,
+                "localField"   -> "_id",
+                "foreignField" -> "team",
+                "as"           -> "requests"
+              )
+            )
+          ),
+          Group(BSONNull)(
+            "nb" -> Sum($doc("$size" -> "$requests"))
+          )
+        )
+      }
+      .map(~_.flatMap(_.int("nb")))
 
-  val sortPopular = $sort desc "nbMembers"
+  private[team] val enabledSelect = $doc("enabled" -> true)
+
+  private[team] val sortPopular = $sort desc "nbMembers"
 }

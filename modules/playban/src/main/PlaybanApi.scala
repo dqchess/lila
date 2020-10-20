@@ -3,12 +3,11 @@ package lila.playban
 import reactivemongo.api.bson._
 import scala.concurrent.duration._
 
-import chess.variant._
-import chess.{ Color, Status }
+import chess.{ Centis, Color, Status }
 import lila.common.{ Bus, Iso, Uptime }
 import lila.db.dsl._
 import lila.game.{ Game, Player, Pov, Source }
-import lila.message.{ MessageApi, ModPreset }
+import lila.msg.{ MsgApi, MsgPreset }
 import lila.user.{ User, UserRepo }
 
 import org.joda.time.DateTime
@@ -19,7 +18,7 @@ final class PlaybanApi(
     feedback: PlaybanFeedback,
     userRepo: UserRepo,
     cacheApi: lila.memo.CacheApi,
-    messenger: MessageApi
+    messenger: MsgApi
 )(implicit ec: scala.concurrent.ExecutionContext) {
 
   import lila.db.BSON.BSONJodaDateTimeHandler
@@ -37,9 +36,9 @@ final class PlaybanApi(
   private val blameableSources: Set[Source] = Set(Source.Lobby, Source.Pool, Source.Tournament)
 
   private def blameable(game: Game): Fu[Boolean] =
-    (game.source.exists(s => blameableSources(s)) && game.hasClock) ?? {
+    (game.source.exists(blameableSources.contains) && game.hasClock) ?? {
       if (game.rated) fuTrue
-      else userRepo.containsEngine(game.userIds) dmap (!_)
+      else !userRepo.containsEngine(game.userIds)
     }
 
   private def IfBlameable[A: ornicar.scalalib.Zero](game: Game)(f: => Fu[A]): Fu[A] =
@@ -47,40 +46,34 @@ final class PlaybanApi(
       blameable(game) flatMap { _ ?? f }
     }
 
-  private def roughWinEstimate(game: Game, color: Color) = {
-    (game.chess.board.materialImbalance, game.variant) match {
-      case (_, Antichess | Crazyhouse | Horde) => 0
-      case (a, _) if a >= 5                    => 1
-      case (a, _) if a <= -5                   => -1
-      case _                                   => 0
+  def abort(pov: Pov, isOnGame: Set[Color]): Funit =
+    IfBlameable(pov.game) {
+      pov.player.userId.ifTrue(isOnGame(pov.opponent.color)) ?? { userId =>
+        save(Outcome.Abort, userId, RageSit.Reset) >>- feedback.abort(pov)
+      }
     }
-  } * (if (color.white) 1 else -1)
 
-  def abort(pov: Pov, isOnGame: Set[Color]): Funit = IfBlameable(pov.game) {
-    pov.player.userId.ifTrue(isOnGame(pov.opponent.color)) ?? { userId =>
-      save(Outcome.Abort, userId, 0) >>- feedback.abort(pov)
+  def noStart(pov: Pov): Funit =
+    IfBlameable(pov.game) {
+      pov.player.userId ?? { userId =>
+        save(Outcome.NoPlay, userId, RageSit.Reset) >>- feedback.noStart(pov)
+      }
     }
-  }
-
-  def noStart(pov: Pov): Funit = IfBlameable(pov.game) {
-    pov.player.userId ?? { userId =>
-      save(Outcome.NoPlay, userId, 0) >>- feedback.noStart(pov)
-    }
-  }
 
   def rageQuit(game: Game, quitterColor: Color): Funit =
     sandbag(game, quitterColor) >> IfBlameable(game) {
       game.player(quitterColor).userId ?? { userId =>
-        save(Outcome.RageQuit, userId, roughWinEstimate(game, quitterColor) * 10) >>-
+        save(Outcome.RageQuit, userId, RageSit.imbalanceInc(game, quitterColor)) >>-
           feedback.rageQuit(Pov(game, quitterColor))
       }
     }
 
   def flag(game: Game, flaggerColor: Color): Funit = {
 
-    def unreasonableTime = game.clock map { c =>
-      (c.estimateTotalSeconds / 12) atLeast 15 atMost (3 * 60)
-    }
+    def unreasonableTime =
+      game.clock map { c =>
+        (c.estimateTotalSeconds / 12) atLeast 15 atMost (3 * 60)
+      }
 
     // flagged after waiting a long time
     def sitting: Option[Funit] =
@@ -88,8 +81,8 @@ final class PlaybanApi(
         userId <- game.player(flaggerColor).userId
         seconds = nowSeconds - game.movedAt.getSeconds
         if unreasonableTime.exists(seconds >= _)
-      } yield save(Outcome.Sitting, userId, roughWinEstimate(game, flaggerColor) * 10) >>-
-        feedback.sitting(Pov(game, flaggerColor)) >>-
+      } yield save(Outcome.Sitting, userId, RageSit.imbalanceInc(game, flaggerColor)) >>-
+        feedback.sitting(Pov(game, flaggerColor)) >>
         propagateSitting(game, userId)
 
     // flagged after waiting a short time;
@@ -103,8 +96,8 @@ final class PlaybanApi(
           limit        <- unreasonableTime
         } yield lastMovetime.toSeconds >= limit)
       } map { userId =>
-        save(Outcome.SitMoving, userId, roughWinEstimate(game, flaggerColor) * 10) >>-
-          feedback.sitting(Pov(game, flaggerColor)) >>-
+        save(Outcome.SitMoving, userId, RageSit.imbalanceInc(game, flaggerColor)) >>-
+          feedback.sitting(Pov(game, flaggerColor)) >>
           propagateSitting(game, userId)
       }
 
@@ -128,11 +121,31 @@ final class PlaybanApi(
     } flatMap { isSandbag =>
       IfBlameable(game) {
         ~(for {
-          w       <- winner
-          loserId <- game.player(!w).userId
+          w <- winner
+          loser = game.player(!w)
+          loserId <- loser.userId
         } yield {
-          if (Status.NoStart is status) save(Outcome.NoPlay, loserId, 0) >>- feedback.noStart(Pov(game, !w))
-          else goodOrSandbag(game, !w, isSandbag)
+          if (Status.NoStart is status)
+            save(Outcome.NoPlay, loserId, RageSit.Reset) >>- feedback.noStart(Pov(game, !w))
+          else
+            game.clock
+              .filter {
+                _.remainingTime(loser.color) < Centis(1000) &&
+                game.turnOf(loser) &&
+                Status.Resign.is(status)
+              }
+              .map { c =>
+                (c.estimateTotalSeconds / 10) atLeast 15 atMost (3 * 60)
+              }
+              .exists(_ < nowSeconds - game.movedAt.getSeconds)
+              .option {
+                save(Outcome.SitResign, loserId, RageSit.imbalanceInc(game, loser.color)) >>-
+                  feedback.sitting(Pov(game, loser.color)) >>
+                  propagateSitting(game, loserId)
+              }
+              .getOrElse {
+                goodOrSandbag(game, !w, isSandbag)
+              }
         })
       }
     }
@@ -140,26 +153,29 @@ final class PlaybanApi(
   private def goodOrSandbag(game: Game, loserColor: Color, isSandbag: Boolean): Funit =
     game.player(loserColor).userId ?? { userId =>
       if (isSandbag) feedback.sandbag(Pov(game, loserColor))
-      val rageSitDelta = if (isSandbag) 0 else 1 // proper defeat decays ragesit
+      val rageSitDelta =
+        if (isSandbag) RageSit.Reset
+        else RageSit.redeem(game)
       save(if (isSandbag) Outcome.Sandbag else Outcome.Good, userId, rageSitDelta)
     }
 
   // memorize users without any ban to save DB reads
   private val cleanUserIds = new lila.memo.ExpireSetMemo(30 minutes)
 
-  def currentBan(userId: User.ID): Fu[Option[TempBan]] = !cleanUserIds.get(userId) ?? {
-    coll.ext
-      .find(
-        $doc("_id" -> userId, "b.0" $exists true),
-        $doc("_id" -> false, "b" -> $doc("$slice" -> -1))
-      )
-      .one[Bdoc]
-      .dmap {
-        _.flatMap(_.getAsOpt[List[TempBan]]("b")).??(_.find(_.inEffect))
-      } addEffect { ban =>
-      if (ban.isEmpty) cleanUserIds put userId
+  def currentBan(userId: User.ID): Fu[Option[TempBan]] =
+    !cleanUserIds.get(userId) ?? {
+      coll
+        .find(
+          $doc("_id" -> userId, "b.0" $exists true),
+          $doc("_id" -> false, "b" -> $doc("$slice" -> -1)).some
+        )
+        .one[Bdoc]
+        .dmap {
+          _.flatMap(_.getAsOpt[List[TempBan]]("b")).??(_.find(_.inEffect))
+        } addEffect { ban =>
+        if (ban.isEmpty) cleanUserIds put userId
+      }
     }
-  }
 
   def hasCurrentBan(userId: User.ID): Fu[Boolean] = currentBan(userId).map(_.isDefined)
 
@@ -169,18 +185,19 @@ final class PlaybanApi(
         case Outcome.RageQuit | Outcome.Sitting | Outcome.NoPlay | Outcome.Abort => false
         case Outcome.Good                                                        => true
       } match {
-        case c if c.size >= 5 => Some(c.count(identity).toDouble / c.size)
-        case _                => none
+        case c if c.sizeIs >= 5 => Some(c.count(identity).toDouble / c.size)
+        case _                  => none
       }
     }
 
   def bans(userIds: List[User.ID]): Fu[Map[User.ID, Int]] =
-    coll.ext
+    coll
       .find(
         $inIds(userIds),
-        $doc("b" -> true)
+        $doc("b" -> true).some
       )
-      .list[Bdoc]()
+      .cursor[Bdoc]()
+      .list()
       .map {
         _.flatMap { obj =>
           obj.getAsOpt[User.ID]("_id") flatMap { id =>
@@ -191,55 +208,58 @@ final class PlaybanApi(
 
   def getRageSit(userId: User.ID) = rageSitCache get userId
 
-  private val rageSitCache = cacheApi[User.ID, RageSit]("playban.ragesit") {
+  private val rageSitCache = cacheApi[User.ID, RageSit](32768, "playban.ragesit") {
     _.expireAfterAccess(20 minutes)
-      .initialCapacity(32768)
       .buildAsyncFuture { userId =>
         coll.primitiveOne[RageSit]($doc("_id" -> userId, "c" $exists true), "c").map(_ | RageSit.empty)
       }
   }
 
-  private def save(outcome: Outcome, userId: User.ID, rageSitDelta: Int): Funit = {
+  private def save(outcome: Outcome, userId: User.ID, rsUpdate: RageSit.Update): Funit = {
     lila.mon.playban.outcome(outcome.key).increment()
     coll.ext
-      .findAndUpdate(
+      .findAndUpdate[UserRecord](
         selector = $id(userId),
         update = $doc(
-          $push("o" -> $doc("$each" -> List(outcome), "$slice" -> -30)),
-          if (rageSitDelta == 0) $min("c" -> 0)
-          else $inc("c"                   -> rageSitDelta)
+          $push("o" -> $doc("$each" -> List(outcome), "$slice" -> -30)) ++ {
+            rsUpdate match {
+              case RageSit.Reset            => $min("c" -> 0)
+              case RageSit.Inc(v) if v != 0 => $inc("c" -> v)
+              case _                        => $empty
+            }
+          }
         ),
         fetchNewObject = true,
         upsert = true
-      )
-      .dmap(_.value flatMap UserRecordBSONHandler.readOpt) orFail
-      s"can't find newly created record for user $userId" flatMap { record =>
+      ) orFail s"can't find newly created record for user $userId" flatMap { record =>
       (outcome != Outcome.Good) ?? {
         userRepo.createdAtById(userId).flatMap { _ ?? { legiferate(record, _) } }
-      } >> {
-        (rageSitDelta != 0) ?? registerRageSit(record, rageSitDelta)
-      }
+      } >>
+        registerRageSit(record, rsUpdate)
     }
   }.void logFailure lila.log("playban")
 
-  private def registerRageSit(record: UserRecord, delta: Int): Funit = {
-    rageSitCache.put(record.userId, fuccess(record.rageSit))
-    (delta < 0) ?? {
-      if (record.rageSit.isTerrible) {
-        lila.log("ragesit").warn(s"Close https://lichess.org/@/${record.userId} ragesit=${record.rageSit}")
-        funit
-      } else if (record.rageSit.isVeryBad) for {
-        mod  <- userRepo.lichess
-        user <- userRepo byId record.userId
-      } yield (mod zip user).headOption foreach {
-        case (m, u) =>
-          lila.log("ragesit").info(s"https://lichess.org/@/${u.username} ${record.rageSit.counterView}")
-          Bus.publish(lila.hub.actorApi.mod.AutoWarning(u.id, ModPreset.sittingAuto.subject), "autoWarning")
-          messenger.sendPreset(m, u, ModPreset.sittingAuto).void
-      }
-      else funit
+  private def registerRageSit(record: UserRecord, update: RageSit.Update): Funit =
+    update match {
+      case RageSit.Inc(delta) =>
+        rageSitCache.put(record.userId, fuccess(record.rageSit))
+        (delta < 0) ?? {
+          if (record.rageSit.isTerrible) funit
+          else if (record.rageSit.isVeryBad)
+            userRepo byId record.userId flatMap {
+              _ ?? { u =>
+                lila.log("ragesit").info(s"https://lichess.org/@/${u.username} ${record.rageSit.counterView}")
+                Bus.publish(
+                  lila.hub.actorApi.mod.AutoWarning(u.id, MsgPreset.sittingAuto.name),
+                  "autoWarning"
+                )
+                messenger.postPreset(u, MsgPreset.sittingAuto).void
+              }
+            }
+          else funit
+        }
+      case _ => funit
     }
-  }
 
   private def legiferate(record: UserRecord, accCreatedAt: DateTime): Funit =
     record.bannable(accCreatedAt) ?? { ban =>

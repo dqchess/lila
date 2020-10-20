@@ -1,6 +1,7 @@
 package lila.common
 
 import akka.actor.{ ActorSystem, Scheduler }
+import scala.collection.BuildFrom
 import scala.concurrent.duration._
 import scala.concurrent.{ ExecutionContext, Promise, Future => ScalaFu }
 
@@ -20,11 +21,10 @@ object Future {
   def lazyFold[T, R](
       futures: LazyList[Fu[T]]
   )(zero: R)(op: (R, T) => R)(implicit ec: ExecutionContext): Fu[R] =
-    LazyList.cons.unapply(futures).fold(fuccess(zero)) {
-      case (future, rest) =>
-        future flatMap { f =>
-          lazyFold(rest)(op(zero, f))(op)
-        }
+    LazyList.cons.unapply(futures).fold(fuccess(zero)) { case (future, rest) =>
+      future flatMap { f =>
+        lazyFold(rest)(op(zero, f))(op)
+      }
     }
 
   def filter[A](
@@ -43,16 +43,15 @@ object Future {
   )(f: A => Fu[Boolean])(implicit ec: ExecutionContext): Fu[List[A]] =
     filter(list)(a => !f(a))
 
-  def traverseSequentially[A, B](
-      list: List[A]
-  )(f: A => Fu[B])(implicit ec: ExecutionContext): Fu[List[B]] =
-    list match {
-      case h :: t =>
-        f(h).flatMap { r =>
-          traverseSequentially(t)(f) dmap (r +: _)
-        }
-      case Nil => fuccess(Nil)
-    }
+  def linear[A, B, M[B] <: Iterable[B]](
+      in: M[A]
+  )(f: A => Fu[B])(implicit cbf: BuildFrom[M[A], B, M[B]], ec: ExecutionContext): Fu[M[B]] = {
+    in.foldLeft(fuccess(cbf.newBuilder(in))) { (fr, a) =>
+      fr flatMap { r =>
+        f(a).dmap(r += _)
+      }
+    }.dmap(_.result())
+  }
 
   def applySequentially[A](
       list: List[A]
@@ -64,17 +63,18 @@ object Future {
 
   def find[A](
       list: List[A]
-  )(f: A => Fu[Boolean])(implicit ec: ExecutionContext): Fu[Option[A]] = list match {
-    case Nil => fuccess(none)
-    case h :: t =>
-      f(h).flatMap {
-        case true  => fuccess(h.some)
-        case false => find(t)(f)
-      }
-  }
+  )(f: A => Fu[Boolean])(implicit ec: ExecutionContext): Fu[Option[A]] =
+    list match {
+      case Nil => fuccess(none)
+      case h :: t =>
+        f(h).flatMap {
+          case true  => fuccess(h.some)
+          case false => find(t)(f)
+        }
+    }
 
-  def exists[A](list: List[A])(pred: A => Fu[Boolean])(
-      implicit ec: ExecutionContext
+  def exists[A](list: List[A])(pred: A => Fu[Boolean])(implicit
+      ec: ExecutionContext
   ): Fu[Boolean] = find(list)(pred).dmap(_.isDefined)
 
   def delay[A](
@@ -84,7 +84,7 @@ object Future {
     else akka.pattern.after(duration, system.scheduler)(run)
 
   def sleep(duration: FiniteDuration)(implicit ec: ExecutionContext, scheduler: Scheduler): Funit = {
-    val p = Promise[Unit]
+    val p = Promise[Unit]()
     scheduler.scheduleOnce(duration)(p success {})
     p.future
   }
@@ -95,8 +95,8 @@ object Future {
     if (duration == 0.millis) run
     else run zip akka.pattern.after(duration, system.scheduler)(funit) dmap (_._1)
 
-  def retry[T](op: () => Fu[T], delay: FiniteDuration, retries: Int, logger: Option[lila.log.Logger])(
-      implicit ec: ExecutionContext,
+  def retry[T](op: () => Fu[T], delay: FiniteDuration, retries: Int, logger: Option[lila.log.Logger])(implicit
+      ec: ExecutionContext,
       system: ActorSystem
   ): Fu[T] =
     op() recoverWith {

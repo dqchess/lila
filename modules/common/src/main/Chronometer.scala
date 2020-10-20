@@ -12,7 +12,11 @@ object Chronometer {
     def micros = (nanos / 1000).toInt
 
     def logIfSlow(threshold: Int, logger: lila.log.Logger)(msg: A => String) = {
-      if (millis >= threshold) logger.debug(s"<${millis}ms> ${msg(result)}")
+      if (millis >= threshold) log(logger)(msg)
+      else this
+    }
+    def log(logger: lila.log.Logger)(msg: A => String) = {
+      logger.info(s"<${millis}ms> ${msg(result)}")
       this
     }
 
@@ -29,27 +33,32 @@ object Chronometer {
       if (nanos > duration.toNanos) pp(msg)
       else result
 
-    def showDuration: String = if (millis >= 1) f"$millis%.2f ms" else s"$micros micros"
+    def showDuration: String = if (millis >= 1) s"$millis ms" else s"$micros micros"
   }
   case class LapTry[A](result: Try[A], nanos: Long)
 
   case class FuLap[A](lap: Fu[Lap[A]]) extends AnyVal {
 
     def logIfSlow(threshold: Int, logger: lila.log.Logger)(msg: A => String) = {
-      lap.dforeach(_.logIfSlow(threshold, logger)(msg))
+      lap.dforeach(_.logIfSlow(threshold, logger)(msg).unit)
       this
     }
 
     def mon(path: lila.mon.TimerPath) = {
       lap dforeach { l =>
-        path(lila.mon).record(l.nanos)
+        path(lila.mon).record(l.nanos).unit
       }
       this
     }
 
-    def pp: Fu[A]                                            = lap dmap (_.pp)
-    def pp(msg: String): Fu[A]                               = lap dmap (_ pp msg)
-    def ppIfGt(msg: String, duration: FiniteDuration): Fu[A] = lap dmap (_.ppIfGt(msg, duration))
+    def log(logger: lila.log.Logger)(msg: A => String) = {
+      lap.dforeach(_.log(logger)(msg).unit)
+      this
+    }
+
+    def pp: Fu[A]                                            = lap.dmap(_.pp)
+    def pp(msg: String): Fu[A]                               = lap.dmap(_ pp msg)
+    def ppIfGt(msg: String, duration: FiniteDuration): Fu[A] = lap.dmap(_.ppIfGt(msg, duration))
 
     def result = lap.dmap(_.result)
   }
@@ -58,7 +67,7 @@ object Chronometer {
 
     def mon(path: Try[A] => kamon.metric.Timer) = {
       lap.dforeach { l =>
-        path(l.result).record(l.nanos)
+        path(l.result).record(l.nanos).unit
       }
       this
     }
@@ -96,7 +105,7 @@ object Chronometer {
   }
 
   def syncMon[A](path: lila.mon.TimerPath)(f: => A): A = {
-    val timer = path(lila.mon).start
+    val timer = path(lila.mon).start()
     val res   = f
     timer.stop()
     res

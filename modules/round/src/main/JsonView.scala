@@ -64,8 +64,7 @@ final class JsonView(
     getSocketStatus(pov.game) zip
       (pov.opponent.userId ?? userRepo.byId) zip
       takebacker.isAllowedIn(pov.game) zip
-      moretimer.isAllowedIn(pov.game) map {
-      case socket ~ opponentUser ~ takebackable ~ moretimeable =>
+      moretimer.isAllowedIn(pov.game) map { case socket ~ opponentUser ~ takebackable ~ moretimeable =>
         import pov._
         Json
           .obj(
@@ -105,7 +104,7 @@ final class JsonView(
               .add("keyboardMove" -> (!nvui && pref.keyboardMove == Pref.KeyboardMove.YES))
               .add("rookCastle" -> (pref.rookCastle == Pref.RookCastle.YES))
               .add("blindfold" -> pref.isBlindfold)
-              .add("highlight" -> (pref.highlight || pref.isBlindfold))
+              .add("highlight" -> pref.highlight)
               .add("destination" -> (pref.destination && !pref.isBlindfold))
               .add("enablePremove" -> pref.premove)
               .add("showCaptured" -> pref.captured)
@@ -133,7 +132,7 @@ final class JsonView(
               "millisToMove" -> game.timeForFirstMove.millis
             )
           })
-    }
+      }
 
   private def commonWatcherJson(g: Game, p: GamePlayer, user: Option[User], withFlags: WithFlags): JsObject =
     Json
@@ -160,8 +159,7 @@ final class JsonView(
       withFlags: WithFlags
   ) =
     getSocketStatus(pov.game) zip
-      userRepo.pair(pov.player.userId, pov.opponent.userId) map {
-      case (socket, (playerUser, opponentUser)) =>
+      userRepo.pair(pov.player.userId, pov.opponent.userId) map { case (socket, (playerUser, opponentUser)) =>
         import pov._
         Json
           .obj(
@@ -196,21 +194,21 @@ final class JsonView(
               )
               .add("is3d" -> pref.is3d)
               .add("clockBar" -> pref.clockBar)
-              .add("highlight" -> (pref.highlight || pref.isBlindfold))
+              .add("highlight" -> pref.highlight)
               .add("destination" -> (pref.destination && !pref.isBlindfold))
               .add("rookCastle" -> (pref.rookCastle == Pref.RookCastle.YES))
               .add("showCaptured" -> pref.captured),
             "evalPut" -> JsBoolean(me.??(evalCache.shouldPut))
           )
           .add("evalPut" -> me.??(evalCache.shouldPut))
-          .add("tv" -> tv.collect {
-            case OnLichessTv(channel, flip) => Json.obj("channel" -> channel, "flip" -> flip)
+          .add("tv" -> tv.collect { case OnLichessTv(channel, flip) =>
+            Json.obj("channel" -> channel, "flip" -> flip)
           })
-          .add("userTv" -> tv.collect {
-            case OnUserTv(userId) => Json.obj("id" -> userId)
+          .add("userTv" -> tv.collect { case OnUserTv(userId) =>
+            Json.obj("id" -> userId)
           })
 
-    }
+      }
 
   def userAnalysisJson(
       pov: Pov,
@@ -230,7 +228,7 @@ final class JsonView(
             "id"         -> gameId,
             "variant"    -> game.variant,
             "opening"    -> game.opening,
-            "initialFen" -> initialFen.fold(chess.format.Forsyth.initial)(_.value),
+            "initialFen" -> (initialFen | chess.format.Forsyth.initial),
             "fen"        -> fen,
             "turns"      -> game.turns,
             "player"     -> game.turnColor.name,
@@ -256,7 +254,7 @@ final class JsonView(
           )
           .add("rookCastle" -> (pref.rookCastle == Pref.RookCastle.YES))
           .add("is3d" -> pref.is3d)
-          .add("highlight" -> (pref.highlight || pref.isBlindfold))
+          .add("highlight" -> pref.highlight)
           .add("destination" -> (pref.destination && !pref.isBlindfold)),
         "path"         -> pov.game.turns,
         "userAnalysis" -> true
@@ -265,7 +263,7 @@ final class JsonView(
   }
 
   private def blurs(game: Game, player: lila.game.Player) =
-    !player.blurs.isEmpty option {
+    player.blurs.nonEmpty option {
       blursWriter.writes(player.blurs) +
         ("percent" -> JsNumber(game.playerBlurPercent(player.color)))
     }
@@ -277,26 +275,29 @@ final class JsonView(
     (pov.game playableBy pov.player) option
       lila.game.Event.PossibleMoves.json(pov.game.situation.destinations, apiVersion)
 
-  private def possibleDrops(pov: Pov): Option[JsValue] = (pov.game playableBy pov.player) ?? {
-    pov.game.situation.drops map { drops =>
-      JsString(drops.map(_.key).mkString)
+  private def possibleDrops(pov: Pov): Option[JsValue] =
+    (pov.game playableBy pov.player) ?? {
+      pov.game.situation.drops map { drops =>
+        JsString(drops.map(_.key).mkString)
+      }
     }
-  }
 
-  private def animationFactor(pref: Pref): Float = pref.animation match {
-    case 0 => 0
-    case 1 => 0.5f
-    case 2 => 1
-    case 3 => 2
-    case _ => 1
-  }
-
-  private def animationDuration(pov: Pov, pref: Pref) = math.round {
-    animationFactor(pref) * animation.value.toMillis * {
-      if (pov.game.finished) 1
-      else math.max(0, math.min(1.2, ((pov.game.estimateTotalTime - 60) / 60) * 0.2))
+  private def animationFactor(pref: Pref): Float =
+    pref.animation match {
+      case 0 => 0
+      case 1 => 0.5f
+      case 2 => 1
+      case 3 => 2
+      case _ => 1
     }
-  }
+
+  private def animationDuration(pov: Pov, pref: Pref) =
+    math.round {
+      animationFactor(pref) * animation.value.toMillis * {
+        if (pov.game.finished) 1
+        else math.max(0, math.min(1.2, ((pov.game.estimateTotalTime - 60) / 60) * 0.2))
+      }
+    }
 }
 
 object JsonView {

@@ -5,7 +5,7 @@ import chess.{ Color, Role }
 import lila.game.{ Game, Pov }
 import lila.rating.PerfType
 import org.joda.time.DateTime
-import scalaz.NonEmptyList
+import cats.data.NonEmptyList
 
 case class Entry(
     id: String,  // gameId + w/b
@@ -67,7 +67,9 @@ case class Move(
     cpl: Option[Int],  // eval diff caused by the move, relative to player, mate ~= 10
     material: Int,     // material imbalance, relative to player
     opportunism: Option[Boolean],
-    luck: Option[Boolean]
+    luck: Option[Boolean],
+    blur: Boolean,
+    timeCv: Option[Float] // time coefficient variation
 )
 
 sealed abstract class Termination(val id: Int, val name: String)
@@ -86,18 +88,19 @@ object Termination {
 
   import chess.{ Status => S }
 
-  def fromStatus(s: chess.Status) = s match {
-    case S.Timeout             => Disconnect
-    case S.Outoftime           => ClockFlag
-    case S.Resign              => Resignation
-    case S.Draw                => Draw
-    case S.Stalemate           => Stalemate
-    case S.Mate | S.VariantEnd => Checkmate
-    case S.Cheat               => Resignation
-    case S.Created | S.Started | S.Aborted | S.NoStart | S.UnknownFinish =>
-      logger.error("Unfinished game in the insight indexer")
-      Resignation
-  }
+  def fromStatus(s: chess.Status) =
+    s match {
+      case S.Timeout             => Disconnect
+      case S.Outoftime           => ClockFlag
+      case S.Resign              => Resignation
+      case S.Draw                => Draw
+      case S.Stalemate           => Stalemate
+      case S.Mate | S.VariantEnd => Checkmate
+      case S.Cheat               => Resignation
+      case S.Created | S.Started | S.Aborted | S.NoStart | S.UnknownFinish =>
+        logger.error(s"Unfinished game in the insight indexer: $s")
+        Resignation
+    }
 }
 
 sealed abstract class Result(val id: Int, val name: String)
@@ -141,11 +144,12 @@ object Castling {
   val byId = all map { p =>
     (p.id, p)
   } toMap
-  def fromMoves(moves: Iterable[String]) = moves.find(_ startsWith "O") match {
-    case Some("O-O")   => Kingside
-    case Some("O-O-O") => Queenside
-    case _             => None
-  }
+  def fromMoves(moves: Iterable[String]) =
+    moves.find(_ startsWith "O") match {
+      case Some("O-O")   => Kingside
+      case Some("O-O-O") => Queenside
+      case _             => None
+    }
 }
 
 sealed abstract class QueenTrade(val id: Boolean, val name: String)
@@ -167,23 +171,24 @@ object RelativeStrength {
   val byId = all map { p =>
     (p.id, p)
   } toMap
-  def apply(diff: Int) = diff match {
-    case d if d < -200 => MuchWeaker
-    case d if d < -100 => Weaker
-    case d if d > 200  => MuchStronger
-    case d if d > 100  => Stronger
-    case _             => Similar
-  }
+  def apply(diff: Int) =
+    diff match {
+      case d if d < -200 => MuchWeaker
+      case d if d < -100 => Weaker
+      case d if d > 200  => MuchStronger
+      case d if d > 100  => Stronger
+      case _             => Similar
+    }
 }
 
 sealed abstract class MovetimeRange(val id: Int, val name: String, val tenths: NonEmptyList[Int])
 object MovetimeRange {
-  case object MTR1   extends MovetimeRange(1, "0 to 1 second", NonEmptyList(1, 5, 10))
-  case object MTR3   extends MovetimeRange(3, "1 to 3 seconds", NonEmptyList(15, 20, 30))
-  case object MTR5   extends MovetimeRange(5, "3 to 5 seconds", NonEmptyList(40, 50))
-  case object MTR10  extends MovetimeRange(10, "5 to 10 seconds", NonEmptyList(60, 80, 100))
-  case object MTR30  extends MovetimeRange(30, "10 to 30 seconds", NonEmptyList(150, 200, 300))
-  case object MTRInf extends MovetimeRange(60, "More than 30 seconds", NonEmptyList(400, 600))
+  case object MTR1   extends MovetimeRange(1, "0 to 1 second", NonEmptyList.of(1, 5, 10))
+  case object MTR3   extends MovetimeRange(3, "1 to 3 seconds", NonEmptyList.of(15, 20, 30))
+  case object MTR5   extends MovetimeRange(5, "3 to 5 seconds", NonEmptyList.of(40, 50))
+  case object MTR10  extends MovetimeRange(10, "5 to 10 seconds", NonEmptyList.of(60, 80, 100))
+  case object MTR30  extends MovetimeRange(30, "10 to 30 seconds", NonEmptyList.of(150, 200, 300))
+  case object MTRInf extends MovetimeRange(60, "More than 30 seconds", NonEmptyList.of(400, 600))
   val all           = List(MTR1, MTR3, MTR5, MTR10, MTR30, MTRInf)
   def reversedNoInf = all.reverse drop 1
   val byId = all map { p =>
@@ -209,4 +214,29 @@ object MaterialRange {
   val byId = all map { p =>
     (p.id, p)
   } toMap
+}
+
+sealed abstract class Blur(val id: Boolean, val name: String)
+object Blur {
+  object Yes extends Blur(true, "Blur")
+  object No  extends Blur(false, "No blur")
+  val all                     = List(Yes, No)
+  def apply(v: Boolean): Blur = if (v) Yes else No
+}
+
+sealed abstract class TimeVariance(val id: Float, val name: String) {
+  lazy val intFactored = (id * TimeVariance.intFactor).toInt
+}
+object TimeVariance {
+  case object VeryConsistent  extends TimeVariance(0.25f, "Very consistent")
+  case object QuiteConsistent extends TimeVariance(0.4f, "Quite consistent")
+  case object Medium          extends TimeVariance(0.6f, "Medium")
+  case object QuiteVariable   extends TimeVariance(0.75f, "Quite variable")
+  case object VeryVariable    extends TimeVariance(1f, "Very variable")
+  val all = List(VeryConsistent, QuiteConsistent, Medium, QuiteVariable, VeryVariable)
+  val byId = all map { p =>
+    (p.id, p)
+  } toMap
+  def apply(v: Float) = all.find(_.id >= v) | VeryVariable
+  val intFactor: Int  = 100_000 // multiply variance by that to get an Int for storage
 }

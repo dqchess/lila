@@ -9,7 +9,7 @@ final class CategRepo(val coll: Coll)(implicit ec: scala.concurrent.ExecutionCon
   def bySlug(slug: String) = coll.byId[Categ](slug)
 
   def withTeams(teams: Iterable[String]): Fu[List[Categ]] =
-    coll.ext
+    coll
       .find(
         $or(
           "team" $exists false,
@@ -18,7 +18,7 @@ final class CategRepo(val coll: Coll)(implicit ec: scala.concurrent.ExecutionCon
       )
       .sort($sort asc "pos")
       .cursor[Categ]()
-      .gather[List]()
+      .list()
 
   def nextPosition: Fu[Int] =
     coll.primitiveOne[Int]($empty, $sort desc "pos", "pos") dmap (~_ + 1)

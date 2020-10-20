@@ -49,7 +49,7 @@ function renderPgnTags(chapter: StudyChapter, submit, types: string[], trans: Tr
             selectedType = el.value;
             el.addEventListener('change', _ => {
               selectedType = el.value;
-              $(el).parents('tr').find('input').focus();
+              $(el).parents('tr').find('input').each(function(this: HTMLInputElement) { this.focus() });
             });
           },
           postpatch: (_, vnode) => {
@@ -60,6 +60,7 @@ function renderPgnTags(chapter: StudyChapter, submit, types: string[], trans: Tr
         h('option', trans.noarg('newTag')),
         ...types.map(t => {
           if (!existingTypes.includes(t)) return option(t, '', t);
+          return undefined;
         })
       ]),
       editable('', (value, el) => {

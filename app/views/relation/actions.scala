@@ -29,7 +29,7 @@ object actions {
             ),
             a(
               titleOrText(trans.composeMessage.txt()),
-              href := s"${routes.Message.form()}?user=$userId",
+              href := routes.Msg.convo(userId),
               cls := "btn-rack__btn",
               dataIcon := "c"
             )
@@ -71,7 +71,7 @@ object actions {
       } getOrElse {
         signup option frag(
           trans.youNeedAnAccountToDoThat(),
-          a(href := routes.Auth.login, cls := "signup")(trans.signUp())
+          a(href := routes.Auth.login(), cls := "signup")(trans.signUp())
         )
       }
     )

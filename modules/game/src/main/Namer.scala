@@ -4,13 +4,13 @@ import lila.common.LightUser
 
 object Namer {
 
-  def playerTextBlocking(player: Player, withRating: Boolean = false)(
-      implicit lightUser: LightUser.GetterSync
+  def playerTextBlocking(player: Player, withRating: Boolean = false)(implicit
+      lightUser: LightUser.GetterSync
   ): String =
     playerTextUser(player, player.userId flatMap lightUser, withRating)
 
-  def playerText(player: Player, withRating: Boolean = false)(
-      implicit lightUser: LightUser.Getter
+  def playerText(player: Player, withRating: Boolean = false)(implicit
+      lightUser: LightUser.Getter
   ): Fu[String] =
     player.userId.??(lightUser) dmap {
       playerTextUser(player, _, withRating)
@@ -27,20 +27,20 @@ object Namer {
       s"A.I. level $level"
     }
 
-  def gameVsTextBlocking(game: Game, withRatings: Boolean = false)(
-      implicit lightUser: LightUser.GetterSync
+  def gameVsTextBlocking(game: Game, withRatings: Boolean = false)(implicit
+      lightUser: LightUser.GetterSync
   ): String =
     s"${playerTextBlocking(game.whitePlayer, withRatings)} - ${playerTextBlocking(game.blackPlayer, withRatings)}"
 
   def gameVsText(game: Game, withRatings: Boolean = false)(implicit lightUser: LightUser.Getter): Fu[String] =
     game.whitePlayer.userId.??(lightUser) zip
-      game.blackPlayer.userId.??(lightUser) dmap {
-      case (wu, bu) =>
+      game.blackPlayer.userId.??(lightUser) dmap { case (wu, bu) =>
         s"${playerTextUser(game.whitePlayer, wu, withRatings)} - ${playerTextUser(game.blackPlayer, bu, withRatings)}"
-    }
+      }
 
-  def ratingString(p: Player) = p.rating match {
-    case Some(rating) => s"$rating${if (p.provisional) "?" else ""}"
-    case _            => "?"
-  }
+  def ratingString(p: Player) =
+    p.rating match {
+      case Some(rating) => s"$rating${if (p.provisional) "?" else ""}"
+      case _            => "?"
+    }
 }

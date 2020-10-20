@@ -2,6 +2,7 @@ package controllers
 
 import play.api.mvc._
 
+import chess.White
 import chess.format.FEN
 import lila.api.Context
 import lila.app._
@@ -16,22 +17,23 @@ final class Analyse(
     roundC: => Round
 ) extends LilaController(env) {
 
-  def requestAnalysis(id: String) = Auth { implicit ctx => me =>
-    OptionFuResult(env.game.gameRepo game id) { game =>
-      env.fishnet.analyser(
-        game,
-        lila.fishnet.Work.Sender(
-          userId = me.id.some,
-          ip = HTTPRequest.lastRemoteAddress(ctx.req).some,
-          mod = isGranted(_.Hunter) || isGranted(_.Relay),
-          system = false
-        )
-      ) map {
-        case true  => NoContent
-        case false => Unauthorized
+  def requestAnalysis(id: String) =
+    Auth { implicit ctx => me =>
+      OptionFuResult(env.game.gameRepo game id) { game =>
+        env.fishnet.analyser(
+          game,
+          lila.fishnet.Work.Sender(
+            userId = me.id.some,
+            ip = HTTPRequest.lastRemoteAddress(ctx.req).some,
+            mod = isGranted(_.Hunter) || isGranted(_.Relay),
+            system = false
+          )
+        ) map {
+          case true  => NoContent
+          case false => Unauthorized
+        }
       }
     }
-  }
 
   def replay(pov: Pov, userTv: Option[lila.user.User])(implicit ctx: Context) =
     if (HTTPRequest isCrawler ctx.req) replayBot(pov)
@@ -39,13 +41,17 @@ final class Analyse(
       env.game.gameRepo initialFen pov.gameId flatMap { initialFen =>
         gameC.preloadUsers(pov.game) >> RedirectAtFen(pov, initialFen) {
           (env.analyse.analyser get pov.game) zip
-            env.fishnet.api.gameIdExists(pov.gameId) zip
+            (!pov.game.metadata.analysed ?? env.fishnet.api.userAnalysisExists(pov.gameId)) zip
             (pov.game.simulId ?? env.simul.repo.find) zip
             roundC.getWatcherChat(pov.game) zip
             (ctx.noBlind ?? env.game.crosstableApi.withMatchup(pov.game)) zip
             env.bookmark.api.exists(pov.game, ctx.me) zip
-            env.api.pgnDump(pov.game, initialFen, analysis = none, PgnDump.WithFlags(clocks = false)) flatMap {
-            case analysis ~ analysisInProgress ~ simul ~ chat ~ crosstable ~ bookmarked ~ pgn =>
+            env.api.pgnDump(
+              pov.game,
+              initialFen,
+              analysis = none,
+              PgnDump.WithFlags(clocks = false)
+            ) flatMap { case analysis ~ analysisInProgress ~ simul ~ chat ~ crosstable ~ bookmarked ~ pgn =>
               env.api.roundApi.review(
                 pov,
                 lila.api.Mobile.Api.currentVersion,
@@ -81,32 +87,33 @@ final class Analyse(
                   )
                 )
               }
-          }
+            }
         }
       }
 
-  def embed(gameId: String, color: String) = Action.async { implicit req =>
-    env.game.gameRepo.gameWithInitialFen(gameId) flatMap {
-      case Some((game, initialFen)) =>
-        val pov = Pov(game, chess.Color(color == "white"))
-        env.api.roundApi.embed(
-          pov,
-          lila.api.Mobile.Api.currentVersion,
-          initialFenO = initialFen.some,
-          withFlags = WithFlags(opening = true)
-        ) map { data =>
-          Ok(html.analyse.embed(pov, data))
-        }
-      case _ => fuccess(NotFound(html.analyse.embed.notFound))
+  def embed(gameId: String, color: String) =
+    Action.async { implicit req =>
+      env.game.gameRepo.gameWithInitialFen(gameId) flatMap {
+        case Some((game, initialFen)) =>
+          val pov = Pov(game, chess.Color.fromName(color) | White)
+          env.api.roundApi.embed(
+            pov,
+            lila.api.Mobile.Api.currentVersion,
+            initialFenO = initialFen.some,
+            withFlags = WithFlags(opening = true)
+          ) map { data =>
+            Ok(html.analyse.embed(pov, data))
+          }
+        case _ => fuccess(NotFound(html.analyse.embed.notFound))
+      } dmap EnableSharedArrayBuffer
     }
-  }
 
   private def RedirectAtFen(pov: Pov, initialFen: Option[FEN])(or: => Fu[Result])(implicit ctx: Context) =
-    get("fen").fold(or) { atFen =>
+    get("fen").map(FEN.clean).fold(or) { atFen =>
       val url = routes.Round.watcher(pov.gameId, pov.color.name)
       fuccess {
         chess.Replay
-          .plyAtFen(pov.game.pgnMoves, initialFen.map(_.value), pov.game.variant, atFen)
+          .plyAtFen(pov.game.pgnMoves, initialFen, pov.game.variant, atFen)
           .fold(
             err => {
               lila.log("analyse").info(s"RedirectAtFen: ${pov.gameId} $atFen $err")

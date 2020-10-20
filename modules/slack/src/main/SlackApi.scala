@@ -1,15 +1,14 @@
 package lila.slack
 
 import org.joda.time.DateTime
-import play.api.Mode
 
-import lila.common.{ EmailAddress, IpAddress, LightUser }
+import lila.common.{ ApiVersion, EmailAddress, Heapsort, IpAddress, LightUser }
 import lila.hub.actorApi.slack._
 import lila.user.User
 
 final class SlackApi(
     client: SlackClient,
-    mode: Mode,
+    noteApi: lila.user.NoteApi,
     implicit val lightUser: LightUser.Getter
 )(implicit ec: scala.concurrent.ExecutionContext) {
 
@@ -21,8 +20,10 @@ final class SlackApi(
 
     private var buffer: Vector[ChargeEvent] = Vector.empty
 
+    implicit private val amountOrdering = Ordering.by[ChargeEvent, Int](_.amount)
+
     def apply(event: ChargeEvent): Funit =
-      if (event.amount < 5000) addToBuffer(event)
+      if (event.amount < 10000) addToBuffer(event)
       else
         displayMessage {
           s"${userAt(event.username)} donated ${amount(event.amount)}. Monthly progress: ${event.percent}%"
@@ -30,9 +31,12 @@ final class SlackApi(
 
     private def addToBuffer(event: ChargeEvent): Funit = {
       buffer = buffer :+ event
-      (buffer.head.date isBefore DateTime.now.minusHours(6)) ?? {
-        val patrons   = buffer map (_.username) map userAt mkString ", "
+      (buffer.head.date isBefore DateTime.now.minusHours(12)) ?? {
+        val firsts    = Heapsort.topN(buffer, 10, amountOrdering).map(_.username).map(userAt).mkString(", ")
         val amountSum = buffer.map(_.amount).sum
+        val patrons =
+          if (firsts.lengthIs > 10) s"$firsts and, like, ${firsts.lengthIs - 10} others,"
+          else firsts
         displayMessage {
           s"$patrons donated ${amount(amountSum)}. Monthly progress: ${buffer.last.percent}%"
         } >>- {
@@ -55,25 +59,26 @@ final class SlackApi(
       if (username == "Anonymous") "Anonymous"
       else s"@$username"
 
-    private def amount(cents: Int) = s"$$${BigDecimal(cents, 2)}"
+    private def amount(cents: Int) = s"$$${BigDecimal(cents.toLong, 2)}"
   }
 
-  def publishEvent(event: Event): Funit = event match {
-    case Error(msg)   => publishError(msg)
-    case Warning(msg) => publishWarning(msg)
-    case Info(msg)    => publishInfo(msg)
-    case Victory(msg) => publishVictory(msg)
-    case TournamentName(userName, tourId, tourName) =>
-      client(
-        SlackMessage(
-          username = "Tournament name alert",
-          icon = "children_crossing",
-          text =
-            s"${userLink(userName)} created ${link(s"https://lichess.org/tournament/$tourId", s"$tourName Arena")}",
-          channel = rooms.tavern
+  def publishEvent(event: Event): Funit =
+    event match {
+      case Error(msg)   => publishError(msg)
+      case Warning(msg) => publishWarning(msg)
+      case Info(msg)    => publishInfo(msg)
+      case Victory(msg) => publishVictory(msg)
+      case TournamentName(userName, tourId, tourName) =>
+        client(
+          SlackMessage(
+            username = "Tournament name alert",
+            icon = "children_crossing",
+            text =
+              s"${userLink(userName)} created ${link(s"https://lichess.org/tournament/$tourId", s"$tourName Arena")}",
+            channel = rooms.tavern
+          )
         )
-      )
-  }
+    }
 
   def commlog(mod: User, user: User, reportBy: Option[User.ID]): Funit =
     client(
@@ -89,6 +94,34 @@ final class SlackApi(
         channel = "commlog"
       )
     )
+
+  def monitorMod(modId: User.ID, icon: String, text: String): Funit =
+    lightUser(modId) flatMap {
+      _ ?? { mod =>
+        client(
+          SlackMessage(
+            username = mod.name,
+            icon = "scroll",
+            text = s":$icon: ${linkifyUsers(text)}",
+            channel = "tavern-monitor"
+          )
+        )
+      }
+    }
+
+  def logMod(modId: User.ID, icon: String, text: String): Funit =
+    lightUser(modId) flatMap {
+      _ ?? { mod =>
+        client(
+          SlackMessage(
+            username = mod.name,
+            icon = "scroll",
+            text = s":$icon: ${linkifyUsers(text)}",
+            channel = "tavern-log"
+          )
+        )
+      }
+    }
 
   def chatPanic(mod: User, v: Boolean): Funit =
     client(
@@ -174,25 +207,12 @@ final class SlackApi(
     client(
       SlackMessage(
         username = "lichess info",
-        icon = "monkey",
+        icon = "lichess",
         text = linkifyUsers(msg),
         channel = rooms.general
       )
     )
 
-  def publishRestart =
-    if (isProd) publishInfo("Lichess has restarted!")
-    else
-      client(
-        SlackMessage(
-          username = stage.name,
-          icon = stage.icon,
-          text = "stage has restarted.",
-          channel = rooms.devNoise
-        )
-      )
-
-  private val isProd                                  = mode == Mode.Prod
   private def link(url: String, name: String)         = s"<$url|$name>"
   private def lichessLink(path: String, name: String) = s"<https://lichess.org$path|$name>"
   private def userLink(name: String): String          = lichessLink(s"/@/$name?mod", name)
@@ -209,14 +229,26 @@ final class SlackApi(
     userRegex matcher msg replaceAll userReplace
 
   def userMod(user: User, mod: User): Funit =
-    client(
-      SlackMessage(
-        username = mod.username,
-        icon = "eyes",
-        text = s"Let's have a look at _*${userLink(user.username)}*_",
-        channel = rooms.tavern
-      )
-    )
+    noteApi
+      .forMod(user.id)
+      .map(_.headOption.filter(_.date isAfter DateTime.now.minusMinutes(5)))
+      .map {
+        case None =>
+          SlackMessage(
+            username = mod.username,
+            icon = "eyes",
+            text = s"Let's have a look at _*${userLink(user.username)}*_",
+            channel = rooms.tavern
+          )
+        case Some(note) =>
+          SlackMessage(
+            username = mod.username,
+            icon = "spiral_note_pad",
+            text = s"_*${userLink(user.username)}*_ (${userNotesLink(user.username)}):\n" +
+              linkifyUsers(note.text take 2000),
+            channel = rooms.tavern
+          )
+      } flatMap client.apply
 
   def userModNote(modName: String, username: String, note: String): Funit =
     client(
@@ -225,60 +257,39 @@ final class SlackApi(
         icon = "spiral_note_pad",
         text = (s"_*${userLink(username)}*_ (${userNotesLink(username)}):\n" +
           linkifyUsers(note take 2000)),
-        channel = rooms.tavern
+        channel = rooms.tavernNotes
       )
     )
 
-  def deployPre: Funit =
-    if (isProd)
-      client(
-        SlackMessage(
-          username = "deployment",
-          icon = "rocket",
-          text = "Lichess will be updated in a minute! Fasten your seatbelts.",
-          channel = rooms.general
-        )
+  def stop(): Funit =
+    client(
+      SlackMessage(
+        username = "deployment",
+        icon = "lichess",
+        text = "Lichess is being updated! Brace for impact.",
+        channel = rooms.general
       )
-    else
-      client(
-        SlackMessage(
-          username = stage.name,
-          icon = stage.icon,
-          text = "stage will be updated in a minute.",
-          channel = rooms.general
-        )
-      )
+    )
 
-  def deployPost: Funit =
-    if (isProd)
-      client(
-        SlackMessage(
-          username = "deployment",
-          icon = "rocket",
-          text = "Lichess is being updated! Brace for impact.",
-          channel = rooms.general
-        )
-      )
-    else
-      client(
-        SlackMessage(
-          username = "stage.lichess.org",
-          icon = "volcano",
-          text = "stage has been updated!",
-          channel = rooms.devNoise
-        )
-      )
-
-  def signup(user: User, email: EmailAddress, ip: IpAddress, fp: Option[String], susp: Boolean) =
+  def signup(
+      user: User,
+      email: EmailAddress,
+      ip: IpAddress,
+      fp: Option[String],
+      apiVersion: Option[ApiVersion],
+      susp: Boolean
+  ) =
     client(
       SlackMessage(
         username = "lichess",
         icon = "musical_note",
         text = {
+          val link      = userLink(user.username)
           val emailLink = lichessLink(s"/mod/search?q=${email.value}", email.value)
           val ipLink    = lichessLink(s"/mod/search?q=$ip", ip.value)
           val fpLink    = fp.fold("none")(print => lichessLink(s"/mod/print/$print", print))
-          s"${userLink(user.username)} EMAIL: $emailLink IP: $ipLink FP: $fpLink${susp ?? " *proxy*"}"
+          s"$link EMAIL: $emailLink IP: $ipLink FP: $fpLink${susp ?? " *proxy*"}${apiVersion
+            .??(v => s" API v$v")}"
         },
         channel = rooms.signups
       )
@@ -288,12 +299,13 @@ final class SlackApi(
 private object SlackApi {
 
   object rooms {
-    val general    = "team"
-    val tavern     = "tavern"
-    val tavernBots = "tavern-bots"
-    val signups    = "signups"
-    val broadcast  = "broadcast"
-    val devNoise   = "dev-noise"
+    val general     = "team"
+    val tavern      = "tavern"
+    val tavernBots  = "tavern-bots"
+    val tavernNotes = "tavern-notes"
+    val signups     = "signups"
+    val broadcast   = "broadcast"
+    val devNoise    = "dev-noise"
   }
 
   object stage {

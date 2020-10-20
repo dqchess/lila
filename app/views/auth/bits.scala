@@ -6,48 +6,52 @@ import play.api.data.{ Field, Form }
 import lila.api.Context
 import lila.app.templating.Environment._
 import lila.app.ui.ScalatagsTemplate._
+import lila.security.RecaptchaForm
 import lila.user.User
 
 import controllers.routes
 
 object bits {
 
-  def formFields(username: Field, password: Field, emailOption: Option[Field], register: Boolean)(
-      implicit ctx: Context
-  ) = frag(
-    form3.group(username, if (register) trans.username() else trans.usernameOrEmail()) { f =>
-      frag(
-        form3.input(f)(autofocus, required),
-        p(cls := "error exists none")(trans.usernameAlreadyUsed())
-      )
-    },
-    form3.password(password, trans.password()),
-    emailOption.map { email =>
-      form3.group(email, trans.email(), help = frag("We will only use it for password reset.").some)(
-        form3.input(_, typ = "email")(required)
-      )
-    }
-  )
-
-  def passwordReset(form: Form[_], captcha: lila.common.Captcha, ok: Option[Boolean] = None)(
-      implicit ctx: Context
+  def formFields(username: Field, password: Field, emailOption: Option[Field], register: Boolean)(implicit
+      ctx: Context
   ) =
+    frag(
+      form3.group(username, if (register) trans.username() else trans.usernameOrEmail()) { f =>
+        frag(
+          form3.input(f)(autofocus, required, autocomplete := "username"),
+          p(cls := "error username-exists none")(trans.usernameAlreadyUsed())
+        )
+      },
+      form3.passwordModified(password, trans.password())(
+        autocomplete := (if (register) "new-password" else "current-password")
+      ),
+      emailOption.map { email =>
+        form3.group(email, trans.email(), help = frag("We will only use it for password reset.").some)(
+          form3.input(_, typ = "email")(required)
+        )
+      }
+    )
+
+  def passwordReset(form: RecaptchaForm[_], fail: Boolean)(implicit ctx: Context) =
     views.html.base.layout(
       title = trans.passwordReset.txt(),
       moreCss = cssTag("auth"),
-      moreJs = captchaTag
+      moreJs = views.html.base.recaptcha.script(form),
+      csp = defaultCsp.withRecaptcha.some
     ) {
       main(cls := "auth auth-signup box box-pad")(
         h1(
-          ok.map { r =>
-            span(cls := (if (r) "is-green" else "is-red"), dataIcon := (if (r) "E" else "L"))
-          },
+          fail option span(cls := "is-red", dataIcon := "L"),
           trans.passwordReset()
         ),
-        postForm(cls := "form3", action := routes.Auth.passwordResetApply)(
+        postForm(id := form.formId, cls := "form3", action := routes.Auth.passwordResetApply())(
           form3.group(form("email"), trans.email())(form3.input(_, typ = "email")(autofocus)),
-          views.html.base.captcha(form, captcha),
-          form3.action(form3.submit(trans.emailMeALink()))
+          form3.action(
+            views.html.base.recaptcha.button(form) {
+              form3.submit(trans.emailMeALink())
+            }
+          )
         )
       )
     }
@@ -63,8 +67,8 @@ object bits {
       )
     }
 
-  def passwordResetConfirm(u: User, token: String, form: Form[_], ok: Option[Boolean] = None)(
-      implicit ctx: Context
+  def passwordResetConfirm(u: User, token: String, form: Form[_], ok: Option[Boolean] = None)(implicit
+      ctx: Context
   ) =
     views.html.base.layout(
       title = s"${u.username} - ${trans.changePassword.txt()}",
@@ -82,34 +86,39 @@ object bits {
         ),
         postForm(cls := "form3", action := routes.Auth.passwordResetConfirmApply(token))(
           form3.hidden(form("token")),
-          form3.passwordModified(form("newPasswd1"), trans.newPassword())(autofocus),
-          form3.password(form("newPasswd2"), trans.newPasswordAgain()),
+          form3.passwordModified(form("newPasswd1"), trans.newPassword())(
+            autofocus,
+            autocomplete := "new-password"
+          ),
+          form3.passwordModified(form("newPasswd2"), trans.newPasswordAgain())(
+            autocomplete := "new-password"
+          ),
           form3.globalError(form),
           form3.action(form3.submit(trans.changePassword()))
         )
       )
     }
 
-  def magicLink(form: Form[_], captcha: lila.common.Captcha, ok: Option[Boolean] = None)(
-      implicit ctx: Context
-  ) =
+  def magicLink(form: RecaptchaForm[_], fail: Boolean)(implicit ctx: Context) =
     views.html.base.layout(
       title = "Log in by email",
       moreCss = cssTag("auth"),
-      moreJs = captchaTag
+      moreJs = views.html.base.recaptcha.script(form),
+      csp = defaultCsp.withRecaptcha.some
     ) {
       main(cls := "auth auth-signup box box-pad")(
         h1(
-          ok.map { r =>
-            span(cls := (if (r) "is-green" else "is-red"), dataIcon := (if (r) "E" else "L"))
-          },
+          fail option span(cls := "is-red", dataIcon := "L"),
           "Log in by email"
         ),
         p("We will send you an email containing a link to log you in."),
-        postForm(cls := "form3", action := routes.Auth.magicLinkApply)(
-          form3.group(form("email"), trans.email())(form3.input(_, typ = "email")(autofocus)),
-          views.html.base.captcha(form, captcha),
-          form3.action(form3.submit(trans.emailMeALink()))
+        postForm(id := form.formId, cls := "form3", action := routes.Auth.magicLinkApply())(
+          form3.group(form("email"), trans.email())(
+            form3.input(_, typ = "email")(autofocus, autocomplete := "email")
+          ),
+          form3.action(views.html.base.recaptcha.button(form) {
+            form3.submit(trans.emailMeALink())
+          })
         )
       )
     }
@@ -120,13 +129,14 @@ object bits {
     ) {
       main(cls := "page-small box box-pad")(
         h1(cls := "is-green text", dataIcon := "E")(trans.checkYourEmail()),
-        p("We've sent you an email with a log in link."),
+        p("We've sent you an email with a link."),
         p(trans.ifYouDoNotSeeTheEmailCheckOtherPlaces())
       )
     }
 
-  def checkYourEmailBanner(userEmail: lila.security.EmailConfirm.UserEmail) = frag(
-    styleTag("""
+  def checkYourEmailBanner(userEmail: lila.security.EmailConfirm.UserEmail) =
+    frag(
+      styleTag("""
 body { margin-top: 45px; }
 #email-confirm {
   height: 40px;
@@ -151,11 +161,11 @@ body { margin-top: 45px; }
   margin-left: 1em;
 }
 """),
-    div(id := "email-confirm")(
-      s"Almost there, ${userEmail.username}! Now check your email (${userEmail.email.conceal}) for signup confirmation.",
-      a(href := routes.Auth.checkYourEmail)("Click here for help")
+      div(id := "email-confirm")(
+        s"Almost there, ${userEmail.username}! Now check your email (${userEmail.email.conceal}) for signup confirmation.",
+        a(href := routes.Auth.checkYourEmail())("Click here for help")
+      )
     )
-  )
 
   def tor()(implicit ctx: Context) =
     views.html.base.layout(
@@ -163,8 +173,8 @@ body { margin-top: 45px; }
     ) {
       main(cls := "page-small box box-pad")(
         h1(cls := "text", dataIcon := "2")("Ooops"),
-        p("Sorry, you can't signup to lichess through TOR!"),
-        p("As an Anonymous user, you can play, train, and use all lichess features.")
+        p("Sorry, you can't signup to Lichess through Tor!"),
+        p("You can play, train and use almost all Lichess features as an anonymous user.")
       )
     }
 }

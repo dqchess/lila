@@ -14,13 +14,17 @@ object teamBattle {
 
   def edit(tour: Tournament, form: Form[_])(implicit ctx: Context) =
     views.html.base.layout(
-      title = tour.fullName,
+      title = tour.name(),
       moreCss = cssTag("tournament.form"),
-      moreJs = jsTag("tournamentTeamBattleForm.js")
+      moreJs = frag(
+        jsAt("vendor/textcomplete.min.js"),
+        jsModule("teamBattleForm")
+      )
     )(
       main(cls := "page-small")(
         div(cls := "tour__form box box-pad")(
-          h1(tour.fullName),
+          h1(tour.name()),
+          standardFlash(),
           if (tour.isFinished) p("This tournament is over, and the teams can no longer be updated.")
           else p("List the teams that will compete in this battle."),
           postForm(cls := "form3", action := routes.Tournament.teamBattleUpdate(tour.id))(
@@ -46,42 +50,6 @@ object teamBattle {
             form3.submit("Update teams")(tour.isFinished.option(disabled))
           )
         )
-      )
-    )
-
-  def list(tours: List[Tournament])(implicit ctx: Context) =
-    table(cls := "slist")(
-      tbody(
-        tours map { t =>
-          tr(
-            td(cls := "icon")(iconTag(tournamentIconChar(t))),
-            td(cls := "header")(
-              a(href := routes.Tournament.show(t.id))(
-                span(cls := "name")(t.fullName),
-                span(cls := "setup")(
-                  t.clock.show,
-                  " • ",
-                  if (t.variant.exotic) t.variant.name else t.perfType.map(_.name),
-                  !t.position.initial option frag(" • ", trans.thematic()),
-                  " • ",
-                  t.mode.fold(trans.casualTournament, trans.ratedTournament)(),
-                  " • ",
-                  t.durationString
-                )
-              )
-            ),
-            td(cls := "infos")(
-              t.teamBattle map { battle =>
-                frag(battle.teams.size, " teams battle")
-              } getOrElse {
-                "Inner team"
-              },
-              br,
-              momentFromNowOnce(t.startsAt)
-            ),
-            td(cls := "text", dataIcon := "r")(t.nbPlayers.localize)
-          )
-        }
       )
     )
 }

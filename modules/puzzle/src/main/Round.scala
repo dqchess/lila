@@ -42,12 +42,11 @@ object Round {
 
   private val idSep = ':'
   implicit val roundIdHandler = tryHandler[Id](
-    {
-      case BSONString(v) =>
-        v split idSep match {
-          case Array(userId, puzzleId) => Success(Id(userId, decode(Integer parseInt puzzleId)))
-          case _                       => handlerBadValue(s"Invalid puzzle round id $v")
-        }
+    { case BSONString(v) =>
+      v split idSep match {
+        case Array(userId, puzzleId) => Success(Id(userId, decode(Integer parseInt puzzleId)))
+        case _                       => handlerBadValue(s"Invalid puzzle round id $v")
+      }
     },
     id => {
       val puzzleId = "%05d".format(encode(id.puzzleId))
@@ -78,14 +77,15 @@ object Round {
       )
     }
 
-    def writes(w: BSON.Writer, o: Round) = BSONDocument(
-      id   -> o.id,
-      date -> o.date,
-      magic -> {
-        (o.result.win ?? (1 << 31)) |
-          (Math.abs(o.ratingDiff) << 16) |
-          o.rating
-      }
-    )
+    def writes(w: BSON.Writer, o: Round) =
+      BSONDocument(
+        id   -> o.id,
+        date -> o.date,
+        magic -> {
+          (o.result.win ?? (1 << 31)) |
+            (Math.abs(o.ratingDiff) << 16) |
+            o.rating
+        }
+      )
   }
 }

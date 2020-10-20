@@ -25,7 +25,7 @@ sealed trait UserContext {
 
   def usernameOrAnon = username | "Anonymous"
 
-  def troll = me.??(_.troll)
+  def troll = me.??(_.marks.troll)
 
   def ip = lila.common.HTTPRequest lastRemoteAddress req
 
@@ -40,11 +40,12 @@ sealed abstract class BaseUserContext(
     val lang: Lang
 ) extends UserContext {
 
-  override def toString = "%s %s %s".format(
-    me.fold("Anonymous")(_.username),
-    req.remoteAddress,
-    req.headers.get("User-Agent") | "?"
-  )
+  override def toString =
+    "%s %s %s".format(
+      me.fold("Anonymous")(_.username),
+      req.remoteAddress,
+      req.headers.get("User-Agent") | "?"
+    )
 }
 
 final class BodyUserContext[A](val body: Request[A], m: Option[User], i: Option[User], l: Lang)
@@ -79,4 +80,8 @@ object UserContext {
       lang: Lang
   ): BodyUserContext[A] =
     new BodyUserContext(req, me, impersonatedBy, lang)
+
+  trait ToLang {
+    implicit def ctxLang(implicit ctx: UserContext): Lang = ctx.lang
+  }
 }

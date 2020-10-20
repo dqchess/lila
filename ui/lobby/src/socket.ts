@@ -7,14 +7,11 @@ interface Handlers {
   [key: string]: (data: any) => void;
 }
 
-const li = window.lichess;
-
 export default class LobbySocket {
 
-  send: SocketSend;
   handlers: Handlers;
 
-  constructor(send: SocketSend, ctrl: LobbyController) {
+  constructor(readonly send: SocketSend, ctrl: LobbyController) {
 
     this.send = send;
 
@@ -44,7 +41,7 @@ export default class LobbySocket {
       }
     };
 
-    li.idleTimer(
+    lichess.idleTimer(
       3 * 60 * 1000,
       () => send('idle', true),
       () => {
@@ -73,9 +70,9 @@ export default class LobbySocket {
     this.send('poolOut', member.id);
   };
 
-  receive = (type: string, data: any): boolean => {
-    if (this.handlers[type]) {
-      this.handlers[type](data);
+  receive = (tpe: string, data: any): boolean => {
+    if (this.handlers[tpe]) {
+      this.handlers[tpe](data);
       return true;
     }
     return false;

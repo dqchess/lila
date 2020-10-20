@@ -2,6 +2,7 @@ package lila.fishnet
 
 import reactivemongo.api.bson._
 import scala.concurrent.duration._
+import org.joda.time.DateTime
 
 import lila.db.BSON.BSONJodaDateTimeHandler
 import lila.db.dsl._
@@ -15,9 +16,8 @@ final private class FishnetRepo(
 
   import BSONHandlers._
 
-  private val clientCache = cacheApi[Client.Key, Option[Client]]("fishnet.client") {
-    _.initialCapacity(32)
-      .expireAfterWrite(10 minutes)
+  private val clientCache = cacheApi[Client.Key, Option[Client]](32, "fishnet.client") {
+    _.expireAfterWrite(10 minutes)
       .buildAsyncFuture { key =>
         clientColl.one[Client](selectClient(key))
       }
@@ -38,32 +38,55 @@ final private class FishnetRepo(
   def enableClient(key: Client.Key, v: Boolean): Funit =
     clientColl.update.one(selectClient(key), $set("enabled" -> v)).void >>- clientCache.invalidate(key)
   def allRecentClients =
-    clientColl.ext
-      .find(
-        $doc(
-          "instance.seenAt" $gt Client.Instance.recentSince
-        )
+    clientColl.list[Client](
+      $doc(
+        "instance.seenAt" $gt Client.Instance.recentSince
       )
-      .list[Client]()
+    )
+
   def lichessClients =
-    clientColl.ext
-      .find(
-        $doc(
-          "enabled" -> true,
-          "userId" $startsWith "lichess-"
-        )
+    clientColl.list[Client](
+      $doc(
+        "enabled" -> true,
+        "userId" $startsWith "lichess-"
       )
-      .list[Client]()
+    )
 
   def addAnalysis(ana: Work.Analysis)    = analysisColl.insert.one(ana).void
-  def getAnalysis(id: Work.Id)           = analysisColl.ext.find(selectWork(id)).one[Work.Analysis]
+  def getAnalysis(id: Work.Id)           = analysisColl.find(selectWork(id)).one[Work.Analysis]
   def updateAnalysis(ana: Work.Analysis) = analysisColl.update.one(selectWork(ana.id), ana).void
   def deleteAnalysis(ana: Work.Analysis) = analysisColl.delete.one(selectWork(ana.id)).void
   def giveUpAnalysis(ana: Work.Analysis) = deleteAnalysis(ana) >>- logger.warn(s"Give up on analysis $ana")
   def updateOrGiveUpAnalysis(ana: Work.Analysis) =
     if (ana.isOutOfTries) giveUpAnalysis(ana) else updateAnalysis(ana)
-  def countAnalysis(acquired: Boolean) = analysisColl.countSel($doc("acquired" $exists acquired))
-  def countUserAnalysis                = analysisColl.countSel($doc("sender.system" -> false))
+
+  object status {
+    private def system(v: Boolean)   = $doc("sender.system" -> v)
+    private def acquired(v: Boolean) = $doc("acquired" $exists v)
+    private def oldestSeconds(system: Boolean): Fu[Int] =
+      analysisColl
+        .find($doc("sender.system" -> system) ++ acquired(false), $doc("createdAt" -> true).some)
+        .sort($sort asc "createdAt")
+        .one[Bdoc]
+        .map(~_.flatMap(_.getAsOpt[DateTime]("createdAt").map { date =>
+          (nowSeconds - date.getSeconds).toInt atLeast 0
+        }))
+
+    def compute =
+      for {
+        all            <- analysisColl.countSel($empty)
+        userAcquired   <- analysisColl.countSel(system(false) ++ acquired(true))
+        userQueued     <- analysisColl.countSel(system(false) ++ acquired(false))
+        userOldest     <- oldestSeconds(false)
+        systemAcquired <- analysisColl.countSel(system(true) ++ acquired(true))
+        systemQueued =
+          all - userAcquired - userQueued - systemAcquired // because counting this is expensive (no useful index)
+        systemOldest <- oldestSeconds(true)
+      } yield Monitor.Status(
+        user = Monitor.StatusFor(acquired = userAcquired, queued = userQueued, oldest = userOldest),
+        system = Monitor.StatusFor(acquired = systemAcquired, queued = systemQueued, oldest = systemOldest)
+      )
+  }
 
   def getSimilarAnalysis(work: Work.Analysis): Fu[Option[Work.Analysis]] =
     analysisColl.one[Work.Analysis]($doc("game.id" -> work.game.id))
@@ -75,7 +98,7 @@ final private class FishnetRepo(
     clientColl.primitiveOne[String](
       $or(
         "_id" $eq keyOrUser,
-        "userId" $eq keyOrUser
+        "userId" $eq lila.user.User.normalize(keyOrUser)
       ),
       "_id"
     ) orFail "client not found" map Client.Key.apply

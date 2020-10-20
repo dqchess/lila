@@ -17,6 +17,7 @@ final class StudyRepo(private[study] val coll: Coll)(implicit ec: scala.concurre
     val views     = "views"
     val rank      = "rank"
     val likes     = "likes"
+    val topics    = "topics"
     val createdAt = "createdAt"
   }
 
@@ -45,12 +46,12 @@ final class StudyRepo(private[study] val coll: Coll)(implicit ec: scala.concurre
       sort: Bdoc,
       readPreference: ReadPreference = ReadPreference.secondaryPreferred
   ): AkkaStreamCursor[Study] =
-    coll.ext.find(selector).sort(sort).cursor[Study](readPreference)
+    coll.find(selector).sort(sort).cursor[Study](readPreference)
 
   def exists(id: Study.Id) = coll.exists($id(id))
 
   private[study] def selectOwnerId(ownerId: User.ID)   = $doc("ownerId" -> ownerId)
-  private[study] def selectMemberId(memberId: User.ID) = $doc(F.uids    -> memberId)
+  private[study] def selectMemberId(memberId: User.ID) = $doc(F.uids -> memberId)
   private[study] val selectPublic = $doc(
     "visibility" -> VisibilityHandler.writeTry(Study.Visibility.Public).get
   )
@@ -62,6 +63,7 @@ final class StudyRepo(private[study] val coll: Coll)(implicit ec: scala.concurre
     selectMemberId(userId) ++ // use the index
       $doc("ownerId" $ne userId) ++
       $doc(s"members.$userId.role" -> "w")
+  private[study] def selectTopic(topic: StudyTopic) = $doc(F.topics -> topic)
 
   def countByOwner(ownerId: User.ID) = coll.countSel(selectOwnerId(ownerId))
 
@@ -86,6 +88,14 @@ final class StudyRepo(private[study] val coll: Coll)(implicit ec: scala.concurre
           "description" -> ~s.description,
           "updatedAt"   -> DateTime.now
         )
+      )
+      .void
+
+  def updateTopics(s: Study): Funit =
+    coll.update
+      .one(
+        $id(s.id),
+        $set("topics" -> s.topics, "updatedAt" -> DateTime.now)
       )
       .void
 
@@ -142,23 +152,25 @@ final class StudyRepo(private[study] val coll: Coll)(implicit ec: scala.concurre
   private val idNameProjection = $doc("name" -> true)
 
   def publicIdNames(ids: List[Study.Id]): Fu[List[Study.IdName]] =
-    coll.find($inIds(ids) ++ selectPublic, idNameProjection.some).list[Study.IdName]()
+    coll.find($inIds(ids) ++ selectPublic, idNameProjection.some).cursor[Study.IdName]().list()
 
   def recentByOwner(userId: User.ID, nb: Int) =
     coll
       .find(selectOwnerId(userId), idNameProjection.some)
       .sort($sort desc "updatedAt")
-      .list[Study.IdName](nb, ReadPreference.secondaryPreferred)
+      .cursor[Study.IdName](ReadPreference.secondaryPreferred)
+      .list(nb)
 
   // heavy AF. Only use for GDPR.
   private[study] def allIdsByOwner(userId: User.ID): Fu[List[Study.Id]] =
-    coll.distinctEasy[Study.Id, List]("_id", selectOwnerId(userId))
+    coll.distinctEasy[Study.Id, List]("_id", selectOwnerId(userId), ReadPreference.secondaryPreferred)
 
   def recentByContributor(userId: User.ID, nb: Int) =
     coll
       .find(selectContributorId(userId), idNameProjection.some)
       .sort($sort desc "updatedAt")
-      .list[Study.IdName](nb, ReadPreference.secondaryPreferred)
+      .cursor[Study.IdName](ReadPreference.secondaryPreferred)
+      .list(nb)
 
   def isContributor(studyId: Study.Id, userId: User.ID) =
     coll.exists($id(studyId) ++ $doc(s"members.$userId.role" -> "w"))
@@ -209,11 +221,15 @@ final class StudyRepo(private[study] val coll: Coll)(implicit ec: scala.concurre
           .void) inject Cursor.Cont(count + 1)
       }
 
+  private[study] def isAdminMember(study: Study, userId: User.ID): Fu[Boolean] =
+    coll.exists($id(study.id) ++ $doc(s"members.$userId.admin" -> true))
+
   private def countLikes(studyId: Study.Id): Fu[Option[(Study.Likes, DateTime)]] =
     coll
       .aggregateWith[Bdoc]() { framework =>
         import framework._
-        Match($id(studyId)) -> List(
+        List(
+          Match($id(studyId)),
           Project(
             $doc(
               "_id"       -> false,

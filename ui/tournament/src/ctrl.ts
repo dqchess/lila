@@ -1,5 +1,5 @@
 import makeSocket from './socket';
-import xhr from './xhr';
+import * as xhr from './xhr';
 import { myPage, players } from './pagination';
 import * as sound from './sound';
 import * as tour from './tournament';
@@ -29,14 +29,13 @@ export default class TournamentController {
   joinWithTeamSelector: boolean = false;
   redraw: () => void;
 
-  private watchingGameId: string;
-  private lastStorage = window.lichess.storage.make('last-redirect');
+  private lastStorage = lichess.storage.make('last-redirect');
 
   constructor(opts: TournamentOpts, redraw: () => void) {
     this.opts = opts;
     this.data = opts.data;
     this.redraw = redraw;
-    this.trans = window.lichess.trans(opts.i18n);
+    this.trans = lichess.trans(opts.i18n);
     this.socket = makeSocket(opts.socketSend, this);
     this.page = this.data.standing.page;
     this.focusOnMe = tour.isIn(this);
@@ -46,7 +45,6 @@ export default class TournamentController {
     sound.end(this.data);
     sound.countDown(this.data);
     this.redirectToMyGame();
-    if (this.data.featured) this.startWatching(this.data.featured.id);
   }
 
   askReload = (): void => {
@@ -56,21 +54,20 @@ export default class TournamentController {
 
   reload = (data: TournamentData): void => {
     // we joined a private tournament! Reload the page to load the chat
-    if (!this.data.me && data.me && this.data['private']) window.lichess.reload();
+    if (!this.data.me && data.me && this.data['private']) lichess.reload();
     this.data = {...this.data, ...data};
     this.data.me = data.me; // to account for removal on withdraw
     if (data.playerInfo && data.playerInfo.player.id === this.playerInfo.id)
       this.playerInfo.data = data.playerInfo;
     this.loadPage(data.standing);
     if (this.focusOnMe) this.scrollToMe();
-    if (data.featured) this.startWatching(data.featured.id);
     sound.end(data);
     sound.countDown(data);
     this.joinSpinner = false;
     this.redirectToMyGame();
   };
 
-  myGameId = () => this.data.me && this.data.me.gameId;
+  myGameId = () => this.data.me?.gameId;
 
   private redirectToMyGame() {
     const gameId = this.myGameId();
@@ -82,7 +79,7 @@ export default class TournamentController {
     setTimeout(() => {
       if (this.lastStorage.get() !== gameId) {
         this.lastStorage.set(gameId);
-        window.lichess.redirect('/' + gameId);
+        lichess.redirect('/' + gameId);
       }
     }, delay);
   };
@@ -137,13 +134,6 @@ export default class TournamentController {
     }
   }
 
-  private startWatching(id: string) {
-    if (id !== this.watchingGameId) {
-      this.watchingGameId = id;
-      setTimeout(() => this.socket.send("startWatching", id), 1000);
-    }
-  };
-
   scrollToMe = () => {
     const page = myPage(this);
     if (page && page !== this.page) this.setPage(page);
@@ -156,6 +146,7 @@ export default class TournamentController {
   };
 
   showPlayerInfo = (player) => {
+    if (this.data.secondsToStart) return;
     const userId = player.name.toLowerCase();
     this.teamInfo.requested = undefined;
     this.playerInfo = {

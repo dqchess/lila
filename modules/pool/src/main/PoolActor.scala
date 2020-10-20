@@ -1,7 +1,7 @@
 package lila.pool
 
 import scala.concurrent.duration._
-import scala.util.Random
+import lila.common.ThreadLocalRandom
 
 import akka.actor._
 import akka.pattern.pipe
@@ -17,7 +17,7 @@ final private class PoolActor(
 
   import PoolActor._
 
-  var members = Vector[PoolMember]()
+  var members = Vector.empty[PoolMember]
 
   var nextWave: Cancellable = _
 
@@ -25,7 +25,7 @@ final private class PoolActor(
 
   def scheduleWave() =
     nextWave = context.system.scheduler.scheduleOnce(
-      config.wave.every + Random.nextInt(1000).millis,
+      config.wave.every + ThreadLocalRandom.nextInt(1000).millis,
       self,
       ScheduledWave
     )
@@ -38,7 +38,7 @@ final private class PoolActor(
       members.find(joiner.is) match {
         case None =>
           members = members :+ PoolMember(joiner, config, rageSit)
-          if (members.size >= config.wave.players.value) self ! FullWave
+          if (members.sizeIs >= config.wave.players.value) self ! FullWave
         case Some(member) if member.ratingRange != joiner.ratingRange =>
           members = members.map {
             case m if m == member => m withRange joiner.ratingRange
@@ -50,54 +50,49 @@ final private class PoolActor(
     case Leave(userId) =>
       members.find(_.userId == userId) foreach { member =>
         members = members.filter(member !=)
-        monitor.leave.count(monId).increment()
       }
 
     case ScheduledWave =>
-      monitor.wave.scheduled(monId).increment()
+      monitor.scheduled(monId).increment()
       self ! RunWave
 
     case FullWave =>
-      monitor.wave.full(monId).increment()
+      monitor.full(monId).increment()
       self ! RunWave
 
     case RunWave =>
       nextWave.cancel()
-      hookThieve.candidates(config.clock, monId) pipeTo self
+      hookThieve.candidates(config.clock) pipeTo self
+      ()
 
-    case HookThieve.PoolHooks(hooks) => {
-
-      monitor.wave.withRange(monId).record(members.count(_.hasRange))
+    case HookThieve.PoolHooks(hooks) =>
+      monitor.withRange(monId).record(members.count(_.hasRange))
 
       val candidates = members ++ hooks.map(_.member)
 
-      val pairings = lila.common.Chronometer.syncMon(_.lobby.pool.matchMaking.duration(monId)) {
-        MatchMaking(candidates)
-      }
+      val pairings = MatchMaking(candidates)
 
       val pairedMembers = pairings.flatMap(_.members)
 
-      hookThieve.stolen(hooks.filter { h =>
-        pairedMembers.exists(h.is)
-      }, monId)
+      hookThieve.stolen(
+        hooks.filter { h =>
+          pairedMembers.exists(h.is)
+        },
+        monId
+      )
 
       members = members.diff(pairedMembers).map(_.incMisses)
 
-      if (pairings.nonEmpty)
-        gameStarter(config, pairings).mon(_.lobby.pool.gameStart.duration(monId))
+      if (pairings.nonEmpty) gameStarter(config, pairings)
 
-      monitor.wave.candidates(monId).record(candidates.size)
-      monitor.wave.paired(monId).record(pairedMembers.size)
-      monitor.wave.missed(monId).record(members.size)
-      pairedMembers.foreach { m =>
-        monitor.wave.wait(monId).record(m.waitMillis)
-      }
+      monitor.candidates(monId).record(candidates.size)
+      monitor.paired(monId).record(pairedMembers.size)
+      monitor.missed(monId).record(members.size)
       pairings.foreach { p =>
-        monitor.wave.ratingDiff(monId).record(p.ratingDiff)
+        monitor.ratingDiff(monId).record(p.ratingDiff)
       }
 
       scheduleWave()
-    }
 
     case Sris(sris) =>
       members = members.filter { m =>
@@ -105,7 +100,7 @@ final private class PoolActor(
       }
   }
 
-  val monitor = lila.mon.lobby.pool
+  val monitor = lila.mon.lobby.pool.wave
   val monId   = config.id.value.replace('+', '_')
 }
 

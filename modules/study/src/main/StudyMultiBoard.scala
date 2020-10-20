@@ -1,6 +1,6 @@
 package lila.study
 
-import com.github.blemale.scaffeine.{ AsyncLoadingCache, Scaffeine }
+import com.github.blemale.scaffeine.AsyncLoadingCache
 import play.api.libs.json._
 import reactivemongo.api.bson._
 import scala.concurrent.duration._
@@ -15,11 +15,11 @@ import lila.common.config.MaxPerPage
 import lila.common.paginator.{ Paginator, PaginatorJson }
 import lila.db.dsl._
 import lila.db.paginator.MapReduceAdapter
-import lila.game.BSONHandlers.FENBSONHandler
 
 final class StudyMultiBoard(
     runCommand: lila.db.RunCommand,
-    chapterRepo: ChapterRepo
+    chapterRepo: ChapterRepo,
+    cacheApi: lila.memo.CacheApi
 )(implicit ec: scala.concurrent.ExecutionContext) {
   private val maxPerPage = MaxPerPage(9)
 
@@ -31,9 +31,11 @@ final class StudyMultiBoard(
     else fetch(studyId, page, playing)
   } map { PaginatorJson(_) }
 
-  private val firstPageCache: AsyncLoadingCache[Study.Id, Paginator[ChapterPreview]] = Scaffeine()
-    .expireAfterWrite(4 seconds)
-    .buildAsyncFuture[Study.Id, Paginator[ChapterPreview]] { fetch(_, 1, false) }
+  private val firstPageCache: AsyncLoadingCache[Study.Id, Paginator[ChapterPreview]] =
+    cacheApi.scaffeine
+      .refreshAfterWrite(4 seconds)
+      .expireAfterAccess(10 minutes)
+      .buildAsyncFuture[Study.Id, Paginator[ChapterPreview]] { fetch(_, 1, playing = false) }
 
   private def fetch(studyId: Study.Id, page: Int, playing: Boolean): Fu[Paginator[ChapterPreview]] = {
 
@@ -64,7 +66,7 @@ emit(this._id, result)""",
     )
   }
 
-  private val playingSelector = $doc("tags" -> "Result:*")
+  private val playingSelector = $doc("tags" -> "Result:*", "root.n.0" $exists true)
 
   private object handlers {
 
@@ -73,15 +75,16 @@ emit(this._id, result)""",
         for {
           value <- result.getAsTry[List[Bdoc]]("value")
           doc   <- value.headOption toTry "No mapReduce value?!"
-          tags = doc.getAsOpt[Tags]("tags")
+          tags     = doc.getAsOpt[Tags]("tags")
+          lastMove = doc.getAsOpt[Uci]("uci")
         } yield ChapterPreview(
           id = result.getAsOpt[Chapter.Id]("_id") err "Preview missing id",
           name = doc.getAsOpt[Chapter.Name]("name") err "Preview missing name",
           players = tags flatMap ChapterPreview.players,
           orientation = doc.getAsOpt[Color]("orientation") getOrElse Color.White,
           fen = doc.getAsOpt[FEN]("fen") err "Preview missing FEN",
-          lastMove = doc.getAsOpt[Uci]("uci"),
-          playing = tags.flatMap(_(_.Result)) has "*"
+          lastMove = lastMove,
+          playing = lastMove.isDefined && tags.flatMap(_(_.Result)).has("*")
         )
     }
 

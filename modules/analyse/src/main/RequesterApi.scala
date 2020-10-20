@@ -7,7 +7,7 @@ import lila.user.User
 
 final class RequesterApi(coll: Coll)(implicit ec: scala.concurrent.ExecutionContext) {
 
-  private val formatter = format.DateTimeFormat.forPattern("YYYY-MM-dd")
+  private val formatter = format.DateTimeFormat.forPattern("yyyy-MM-dd")
 
   private def today = formatter.print(DateTime.now)
 
@@ -15,8 +15,8 @@ final class RequesterApi(coll: Coll)(implicit ec: scala.concurrent.ExecutionCont
     coll.update
       .one(
         $id(analysis.uid | "anonymous"),
-        $inc("total"  -> 1) ++
-          $inc(today  -> 1) ++
+        $inc("total" -> 1) ++
+          $inc(today -> 1) ++
           $set("last" -> analysis.id),
         upsert = true
       )

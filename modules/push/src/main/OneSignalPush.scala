@@ -3,16 +3,18 @@ package lila.push
 import io.methvin.play.autoconfig._
 import play.api.libs.json._
 import play.api.libs.ws._
+import play.api.libs.ws.JsonBodyReadables._
+import play.api.libs.ws.JsonBodyWritables._
 
 final private class OneSignalPush(
     deviceApi: DeviceApi,
-    ws: WSClient,
+    ws: StandaloneWSClient,
     config: OneSignalPush.Config
 )(implicit ec: scala.concurrent.ExecutionContext) {
 
   import config._
 
-  def apply(userId: String)(data: => PushApi.Data): Funit =
+  def apply(userId: String, data: => PushApi.Data): Funit =
     deviceApi.findLastManyByUserId("onesignal", 3)(userId) flatMap {
       case Nil => funit
       case devices =>
@@ -43,12 +45,13 @@ final private class OneSignalPush(
                 case errors =>
                   fufail(s"[push] ${devices.map(_.deviceId)} $data ${res.status} ${errors mkString ","}")
               }
-            case res => fufail(s"[push] ${devices.map(_.deviceId)} $data ${res.status} ${res.body}")
+            case res =>
+              fufail(s"[push] ${devices.map(_.deviceId)} $data ${lila.log.http(res.status, res.body)}")
           }
     }
 
-  private def readErrors(res: WSResponse): List[String] =
-    ~(res.json \ "errors").asOpt[List[String]]
+  private def readErrors(res: StandaloneWSResponse): List[String] =
+    ~(res.body[JsValue] \ "errors").asOpt[List[String]]
 }
 
 private object OneSignalPush {

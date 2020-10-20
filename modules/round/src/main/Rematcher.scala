@@ -4,13 +4,15 @@ import chess.format.Forsyth
 import chess.variant._
 import chess.{ Game => ChessGame, Board, Color => ChessColor, Castles, Clock, Situation }
 import ChessColor.{ Black, White }
-import com.github.blemale.scaffeine.{ Cache, Scaffeine }
+import com.github.blemale.scaffeine.Cache
+import lila.memo.CacheApi
 import scala.concurrent.duration._
 
 import lila.common.Bus
 import lila.game.{ AnonCookie, Event, Game, GameRepo, PerfPicker, Pov, Rematches, Source }
 import lila.memo.ExpireSetMemo
 import lila.user.{ User, UserRepo }
+import lila.i18n.{ I18nKeys => trans, defaultLang }
 
 final private class Rematcher(
     gameRepo: GameRepo,
@@ -21,27 +23,43 @@ final private class Rematcher(
     rematches: Rematches
 )(implicit ec: scala.concurrent.ExecutionContext) {
 
+  implicit private val chatLang = defaultLang
+
+  private val declined = new lila.memo.ExpireSetMemo(1 minute)
+
+  private val rateLimit = new lila.memo.RateLimit[String](
+    credits = 2,
+    duration = 1 minute,
+    key = "round.rematch"
+  )
+
   import Rematcher.Offers
 
-  private val offers: Cache[Game.ID, Offers] = Scaffeine()
-    .expireAfterWrite(30 minutes)
-    .build[Game.ID, Offers]
+  private val offers: Cache[Game.ID, Offers] = CacheApi.scaffeineNoScheduler
+    .expireAfterWrite(20 minutes)
+    .build[Game.ID, Offers]()
 
   private val chess960 = new ExpireSetMemo(3 hours)
 
   def isOffering(pov: Pov): Boolean = offers.getIfPresent(pov.gameId).exists(_(pov.color))
 
-  def yes(pov: Pov): Fu[Events] = pov match {
-    case Pov(game, color) if game.playerCouldRematch =>
-      if (isOffering(!pov) || game.opponent(color).isAi)
-        rematches.of(game.id).fold(rematchJoin(pov))(rematchExists(pov))
-      else fuccess(rematchCreate(pov))
-    case _ => fuccess(List(Event.ReloadOwner))
-  }
+  def yes(pov: Pov): Fu[Events] =
+    pov match {
+      case Pov(game, color) if game.playerCouldRematch =>
+        if (isOffering(!pov) || game.opponent(color).isAi)
+          rematches.of(game.id).fold(rematchJoin(pov))(rematchExists(pov))
+        else if (!declined.get(pov.flip.fullId) && rateLimit(pov.fullId)(true)(false))
+          fuccess(rematchCreate(pov))
+        else fuccess(List(Event.RematchOffer(by = none)))
+      case _ => fuccess(List(Event.ReloadOwner))
+    }
 
   def no(pov: Pov): Fu[Events] = {
-    if (isOffering(pov)) messenger.system(pov.game, _.rematchOfferCanceled)
-    else if (isOffering(!pov)) messenger.system(pov.game, _.rematchOfferDeclined)
+    if (isOffering(pov)) messenger.system(pov.game, trans.rematchOfferCanceled.txt())
+    else if (isOffering(!pov)) {
+      declined put pov.fullId
+      messenger.system(pov.game, trans.rematchOfferDeclined.txt())
+    }
     offers invalidate pov.game.id
     fuccess(List(Event.RematchOffer(by = none)))
   }
@@ -61,7 +79,7 @@ final private class Rematcher(
           _ = if (pov.game.variant == Chess960 && !chess960.get(pov.gameId)) chess960.put(nextGame.id)
           _ <- gameRepo insertDenormalized nextGame
         } yield {
-          messenger.system(pov.game, _.rematchOfferAccepted)
+          messenger.system(pov.game, trans.rematchOfferAccepted.txt())
           onStart(nextGame.id)
           redirectEvents(nextGame)
         }
@@ -69,7 +87,7 @@ final private class Rematcher(
     }
 
   private def rematchCreate(pov: Pov): Events = {
-    messenger.system(pov.game, _.rematchOfferSent)
+    messenger.system(pov.game, trans.rematchOfferSent.txt())
     pov.opponent.userId foreach { forId =>
       Bus.publish(lila.hub.actorApi.round.RematchOffer(pov.gameId), s"rematchFor:$forId")
     }
@@ -80,9 +98,7 @@ final private class Rematcher(
   private def returnGame(pov: Pov): Fu[Game] =
     for {
       initialFen <- gameRepo initialFen pov.game
-      situation = initialFen flatMap { fen =>
-        Forsyth <<< fen.value
-      }
+      situation = initialFen flatMap Forsyth.<<<
       pieces = pov.game.variant match {
         case Chess960 =>
           if (chess960 get pov.gameId) Chess960.pieces

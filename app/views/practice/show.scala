@@ -20,7 +20,7 @@ object show {
       moreJs = frag(
         analyseTag,
         analyseNvuiTag,
-        embedJsUnsafe(s"""lichess=window.lichess||{};lichess.practice=${safeJsonValue(
+        embedJsUnsafe(s"""lichess.practice=${safeJsonValue(
           Json.obj(
             "practice" -> data.practice,
             "study"    -> data.study,
@@ -33,6 +33,7 @@ object show {
           )
         )}""")
       ),
+      csp = defaultCsp.withWebAssembly.some,
       chessground = false,
       zoomable = true
     ) {

@@ -1,12 +1,17 @@
 package lila.study
 
+import akka.stream.scaladsl._
 import chess.format.pgn.Tags
+import reactivemongo.akkastream.cursorProducer
+import reactivemongo.api._
 import reactivemongo.api.bson._
-import reactivemongo.api.ReadPreference
 
 import lila.db.dsl._
 
-final class ChapterRepo(val coll: Coll)(implicit ec: scala.concurrent.ExecutionContext) {
+final class ChapterRepo(val coll: Coll)(implicit
+    ec: scala.concurrent.ExecutionContext,
+    mat: akka.stream.Materializer
+) {
 
   import BSONHandlers._
 
@@ -28,7 +33,7 @@ final class ChapterRepo(val coll: Coll)(implicit ec: scala.concurrent.ExecutionC
     coll.byId[Chapter, Chapter.Id](id).dmap { _.filter(_.studyId == studyId) }
 
   def firstByStudy(studyId: Study.Id): Fu[Option[Chapter]] =
-    coll.ext.find($studyId(studyId)).sort($sort asc "order").one[Chapter]
+    coll.find($studyId(studyId)).sort($sort asc "order").one[Chapter]
 
   def existsByStudy(studyId: Study.Id): Fu[Boolean] =
     coll exists $studyId(studyId)
@@ -40,14 +45,23 @@ final class ChapterRepo(val coll: Coll)(implicit ec: scala.concurrent.ExecutionC
         noRootProjection.some
       )
       .sort($sort asc "order")
-      .list[Chapter.Metadata]()
+      .cursor[Chapter.Metadata]()
+      .list()
 
-  // loads all study chapters in memory! only used for search indexing and cloning
-  def orderedByStudy(studyId: Study.Id): Fu[List[Chapter]] =
-    coll.ext
+  def orderedByStudySource(studyId: Study.Id): Source[Chapter, _] =
+    coll
       .find($studyId(studyId))
       .sort($sort asc "order")
-      .list[Chapter](none, readPreference = ReadPreference.secondaryPreferred)
+      .cursor[Chapter](readPreference = ReadPreference.secondaryPreferred)
+      .documentSource()
+
+  // loads all study chapters in memory!
+  def orderedByStudy(studyId: Study.Id): Fu[List[Chapter]] =
+    coll
+      .find($studyId(studyId))
+      .sort($sort asc "order")
+      .cursor[Chapter]()
+      .list()
 
   def relaysAndTagsByStudyId(studyId: Study.Id): Fu[List[Chapter.RelayAndTags]] =
     coll
@@ -55,7 +69,8 @@ final class ChapterRepo(val coll: Coll)(implicit ec: scala.concurrent.ExecutionC
         $studyId(studyId),
         $doc("relay" -> true, "tags" -> true).some
       )
-      .list[Bdoc]() map { docs =>
+      .cursor[Bdoc]()
+      .list() map { docs =>
       for {
         doc   <- docs
         id    <- doc.getAsOpt[Chapter.Id]("_id")
@@ -66,9 +81,8 @@ final class ChapterRepo(val coll: Coll)(implicit ec: scala.concurrent.ExecutionC
 
   def sort(study: Study, ids: List[Chapter.Id]): Funit =
     ids.zipWithIndex
-      .map {
-        case (id, index) =>
-          coll.updateField($studyId(study.id) ++ $id(id), "order", index + 1)
+      .map { case (id, index) =>
+        coll.updateField($studyId(study.id) ++ $id(id), "order", index + 1)
       }
       .sequenceFu
       .void
@@ -141,7 +155,7 @@ final class ChapterRepo(val coll: Coll)(implicit ec: scala.concurrent.ExecutionC
     pathToField(chapter, path, "n") ?? { parentChildrenPath =>
       coll.update.one(
         $id(chapter.id) ++ $doc(s"$parentChildrenPath.i" -> child.id),
-        $set(s"$parentChildrenPath.$$"                   -> child)
+        $set(s"$parentChildrenPath.$$" -> child)
       ) flatMap { res =>
         (res.n == 0) ?? coll.update.one($id(chapter.id), $push(parentChildrenPath -> child)).void
       }
@@ -157,18 +171,18 @@ final class ChapterRepo(val coll: Coll)(implicit ec: scala.concurrent.ExecutionC
         $doc("studyId" -> true, "_id" -> true, "name" -> true).some
       )
       .sort($sort asc "order")
-      .list[Bdoc](nbChaptersPerStudy * studyIds.size)
+      .cursor[Bdoc]()
+      .list(nbChaptersPerStudy * studyIds.size)
       .map { docs =>
-        docs.foldLeft(Map.empty[Study.Id, Vector[Chapter.IdName]]) {
-          case (hash, doc) =>
-            doc.getAsOpt[Study.Id]("studyId").fold(hash) { studyId =>
-              hash get studyId match {
-                case Some(chapters) if chapters.size >= nbChaptersPerStudy => hash
-                case maybe =>
-                  val chapters = ~maybe
-                  hash + (studyId -> readIdName(doc).fold(chapters)(chapters :+ _))
-              }
+        docs.foldLeft(Map.empty[Study.Id, Vector[Chapter.IdName]]) { case (hash, doc) =>
+          doc.getAsOpt[Study.Id]("studyId").fold(hash) { studyId =>
+            hash get studyId match {
+              case Some(chapters) if chapters.sizeIs >= nbChaptersPerStudy => hash
+              case maybe =>
+                val chapters = ~maybe
+                hash + (studyId -> readIdName(doc).fold(chapters)(chapters :+ _))
             }
+          }
         }
       }
 
@@ -179,7 +193,8 @@ final class ChapterRepo(val coll: Coll)(implicit ec: scala.concurrent.ExecutionC
         $doc("_id" -> true, "name" -> true).some
       )
       .sort($sort asc "order")
-      .list[Bdoc](Study.maxChapters * 2, ReadPreference.secondaryPreferred)
+      .cursor[Bdoc](ReadPreference.secondaryPreferred)
+      .list(Study.maxChapters * 2)
       .dmap { _ flatMap readIdName }
 
   private def readIdName(doc: Bdoc) =

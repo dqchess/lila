@@ -26,7 +26,7 @@ final private[puzzle] class PuzzleBatch(
       first <- puzzles.headOption.flatten
       last  <- puzzles.lastOption.flatten
     } {
-      if (puzzles.size > 1) logger.info(s"Batch solve ${user.id} ${puzzles.size} ${first.id}->${last.id}")
+      if (puzzles.sizeIs > 1) logger.info(s"Batch solve ${user.id} ${puzzles.size} ${first.id}->${last.id}")
     }
 
   object select {
@@ -37,7 +37,7 @@ final private[puzzle] class PuzzleBatch(
       api.head.find(user) flatMap {
         newPuzzlesForUser(user, _, nb, after)
       } addEffect { puzzles =>
-        lila.mon.puzzle.batch.selector.count.increment(puzzles.size)
+        lila.mon.puzzle.batch.selector.count.increment(puzzles.size).unit
       }
     }.mon(_.puzzle.batch.selector.time)
 
@@ -75,7 +75,7 @@ final private[puzzle] class PuzzleBatch(
         idRange: Range,
         nb: Int
     ): Fu[List[Puzzle]] =
-      coll.ext
+      coll
         .find(
           rangeSelector(
             rating = rating,
@@ -83,8 +83,9 @@ final private[puzzle] class PuzzleBatch(
             idRange = idRange
           )
         )
-        .list[Puzzle](nb) flatMap {
-        case res if res.size < nb && (tolerance + step) <= toleranceMax =>
+        .cursor[Puzzle]()
+        .list(nb) flatMap {
+        case res if res.sizeIs < nb && (tolerance + step) <= toleranceMax =>
           tryRange(
             coll = coll,
             rating = rating,

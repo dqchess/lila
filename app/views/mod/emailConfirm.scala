@@ -8,13 +8,13 @@ import controllers.routes
 
 object emailConfirm {
 
-  def apply(query: String, user: Option[lila.user.User], email: Option[lila.common.EmailAddress])(
-      implicit ctx: Context
+  def apply(query: String, user: Option[lila.user.User], email: Option[lila.common.EmailAddress])(implicit
+      ctx: Context
   ) =
     views.html.base.layout(
       title = "Email confirmation",
       moreCss = cssTag("mod.misc"),
-      moreJs = embedJsUnsafe("""$('.mod-confirm form input').on('paste', function() {
+      moreJs = embedJsUnsafeLoadThen("""$('.mod-confirm form input').on('paste', function() {
 setTimeout(function() { $(this).parent().submit(); }.bind(this), 50);
 }).each(function() {
 this.setSelectionRange(this.value.length, this.value.length);
@@ -30,7 +30,7 @@ this.setSelectionRange(this.value.length, this.value.length);
             "If you provide an email and a username, it will set the email to that user, ",
             "but only if the user has not yet confirmed their email."
           ),
-          st.form(cls := "search", action := routes.Mod.emailConfirm, method := "GET")(
+          st.form(cls := "search", action := routes.Mod.emailConfirm(), method := "GET")(
             input(name := "q", placeholder := "<email> <username (optional)>", value := query, autofocus)
           ),
           user.map { u =>
@@ -52,10 +52,9 @@ this.setSelectionRange(this.value.length, this.value.length);
                   td(email.fold("-")(_.value)),
                   td(u.count.game.localize),
                   td(
-                    u.engine option "ENGINE",
-                    u.booster option "BOOSTER",
-                    u.troll option "SHADOWBAN",
-                    u.ipBan option "IPBAN",
+                    u.marks.engine option "ENGINE",
+                    u.marks.boost option "BOOSTER",
+                    u.marks.troll option "SHADOWBAN",
                     u.disabled option "CLOSED"
                   ),
                   td(momentFromNow(u.createdAt)),

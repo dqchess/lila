@@ -1,6 +1,7 @@
 import { h } from 'snabbdom'
 import { VNode } from 'snabbdom/vnode';
 import { spinner, bind, numberRow, playerName, dataIcon, player as renderPlayer } from './util';
+import { teamName } from './battle';
 import * as status from 'game/status';
 import TournamentController from '../ctrl';
 
@@ -23,7 +24,7 @@ function playerTitle(player) {
 }
 
 function setup(vnode: VNode) {
-  const el = vnode.elm as HTMLElement, p = window.lichess.powertip;
+  const el = vnode.elm as HTMLElement, p = lichess.powertip;
   p.manualUserIn(el);
   p.manualGameIn(el);
 }
@@ -57,7 +58,7 @@ export default function(ctrl: TournamentController): VNode {
       playerTitle(data.player),
       data.player.team ? h('team', {
         hook: bind('click', () => ctrl.showTeamInfo(data.player.team), ctrl.redraw)
-      }, ctrl.data.teamBattle!.teams[data.player.team]) : null,
+      }, [teamName(ctrl.data.teamBattle!, data.player.team)]) : null,
       h('table', [
         data.player.performance ? numberRow(
           noarg('performance'),
@@ -75,7 +76,7 @@ export default function(ctrl: TournamentController): VNode {
       h('table.pairings.sublist', {
         hook: bind('click', e => {
           const href = ((e.target as HTMLElement).parentNode as HTMLElement).getAttribute('data-href');
-          if (href) window.open(href, '_blank');
+          if (href) window.open(href, '_blank', 'noopener');
         })
       }, data.pairings.map(function(p, i) {
         const res = result(p.win, p.status);

@@ -5,6 +5,7 @@ import scala.concurrent.duration._
 
 import lila.game.{ Game, GameRepo, PerfPicker }
 import lila.tree.Node.{ minimalNodeJsonWriter, partitionTreeJsonWriter }
+import lila.i18n.defaultLang
 
 final private class GameJson(
     gameRepo: GameRepo,
@@ -20,18 +21,19 @@ final private class GameJson(
 
   private case class CacheKey(gameId: Game.ID, plies: Int, onlyLast: Boolean)
 
-  private val cache = cacheApi[CacheKey, JsObject]("puzzle.gameJson") {
+  private val cache = cacheApi[CacheKey, JsObject](1024, "puzzle.gameJson") {
     _.expireAfterAccess(5 minutes)
       .maximumSize(1024)
       .buildAsyncFuture(generate)
   }
 
-  private def generate(ck: CacheKey): Fu[JsObject] = ck match {
-    case CacheKey(gameId, plies, onlyLast) =>
-      gameRepo game gameId orFail s"Missing puzzle game $gameId!" flatMap {
-        generate(_, plies, onlyLast)
-      }
-  }
+  private def generate(ck: CacheKey): Fu[JsObject] =
+    ck match {
+      case CacheKey(gameId, plies, onlyLast) =>
+        gameRepo game gameId orFail s"Missing puzzle game $gameId!" flatMap {
+          generate(_, plies, onlyLast)
+        }
+    }
 
   private def generate(game: Game, plies: Int, onlyLast: Boolean): Fu[JsObject] =
     lightUserApi preloadMany game.userIds map { _ =>
@@ -42,7 +44,7 @@ final private class GameJson(
           "id" -> game.id,
           "perf" -> Json.obj(
             "icon" -> perfType.iconChar.toString,
-            "name" -> perfType.name
+            "name" -> perfType.trans(defaultLang)
           ),
           "rated" -> game.rated,
           "players" -> JsArray(game.players.map { p =>

@@ -1,6 +1,8 @@
 package views
 package html.plan
 
+import play.api.i18n.Lang
+
 import lila.api.Context
 import lila.app.templating.Environment._
 import lila.app.ui.ScalatagsTemplate._
@@ -16,7 +18,7 @@ object features {
       openGraph = lila.app.ui
         .OpenGraph(
           title = title,
-          url = s"$netBaseUrl${routes.Plan.features.url}",
+          url = s"$netBaseUrl${routes.Plan.features().url}",
           description = "All of Lichess features are free for all and forever. We do it for the chess!"
         )
         .some
@@ -27,18 +29,18 @@ object features {
           tbody(
             tr(unlimited)(
               "Play and create ",
-              a(href := routes.Tournament.home(1))("tournaments")
+              a(href := routes.Tournament.home())("tournaments")
             ),
             tr(unlimited)(
               "Play and create ",
-              a(href := routes.Simul.home)("simultaneous exhibitions")
+              a(href := routes.Simul.home())("simultaneous exhibitions")
             ),
             tr(unlimited)(
               "Correspondence chess with conditional premoves"
             ),
             tr(check)(
               "Standard chess and ",
-              a(href := routes.Page.variantHome)("8 chess variants (Crazyhouse, Chess960, Horde, ...)")
+              a(href := routes.Page.variantHome())("8 chess variants (Crazyhouse, Chess960, Horde, ...)")
             ),
             tr(custom("30 per day"))(
               s"Deep $engineName server analysis"
@@ -67,10 +69,10 @@ object features {
               )
             ),
             tr(check)(
-              a(href := routes.Learn.index)("All chess basics lessons")
+              a(href := routes.Learn.index())("All chess basics lessons")
             ),
             tr(unlimited)(
-              a(href := routes.Puzzle.home)("Tactical puzzles from user games")
+              a(href := routes.Puzzle.home())("Tactical puzzles from user games")
             ),
             tr(unlimited)(
               a(href := s"${routes.UserAnalysis.index()}#explorer")("Opening explorer"),
@@ -89,7 +91,7 @@ object features {
               " through Lichess 1.5 billion games"
             ),
             tr(unlimited)(
-              a(href := routes.Video.index)("Chess video library")
+              a(href := routes.Video.index())("Chess video library")
             ),
             tr(check)(
               "Forum, teams, messaging, friends, challenges"
@@ -120,13 +122,13 @@ object features {
               "Bullet, Blitz, Rapid, Classical and Correspondence chess"
             ),
             tr(unlimited)(
-              a(href := routes.Tournament.home(1))("Arena tournaments")
+              a(href := routes.Tournament.home())("Arena tournaments")
             ),
             tr(check)(
               s"Board editor and analysis board with $engineName"
             ),
             tr(unlimited)(
-              a(href := routes.Puzzle.home)("Tactics puzzles")
+              a(href := routes.Puzzle.home())("Tactics puzzles")
             ),
             tr(check)(
               "Available in 80+ languages"
@@ -158,7 +160,7 @@ object features {
             st.tr(cls := "price")(
               th,
               td(cls := "green")("$0"),
-              td(a(href := routes.Plan.index, cls := "green button")("$5/month"))
+              td(a(href := routes.Plan.index(), cls := "green button")("$5/month"))
             )
           )
         ),
@@ -173,14 +175,15 @@ object features {
           strong("all features are free for everybody, forever!"),
           br,
           "If you love Lichess, ",
-          a(cls := "button", href := routes.Plan.index)("Support us with a Patron account!")
+          a(cls := "button", href := routes.Plan.index())("Support us with a Patron account!")
         )
       )
     }
 
-  private def header(name: Frag) = thead(
-    st.tr(th(name), th("Free account"), th("Lichess Patron"))
-  )
+  private def header(name: Frag)(implicit lang: Lang) =
+    thead(
+      st.tr(th(name), th(trans.patron.freeAccount()), th(trans.patron.lichessPatron()))
+    )
 
   private val unlimited = span(dataIcon := "E", cls := "is is-green text unlimited")("Unlimited")
 
@@ -194,5 +197,5 @@ object features {
 
   private val title = "Lichess features"
 
-  private val engineName = "Stockfish 10+"
+  private val engineName = "Stockfish 11+"
 }

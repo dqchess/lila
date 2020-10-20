@@ -1,12 +1,13 @@
 package lila.puzzle
 
-import scala.util.Random
+import Puzzle.{ BSONFields => F }
+import reactivemongo.api.ReadPreference
 
+import lila.common.ThreadLocalRandom
 import lila.db.AsyncColl
 import lila.db.dsl._
 import lila.memo.CacheApi._
 import lila.user.User
-import Puzzle.{ BSONFields => F }
 
 final private[puzzle] class Selector(
     puzzleColl: AsyncColl,
@@ -16,16 +17,23 @@ final private[puzzle] class Selector(
 
   import Selector._
 
+  private lazy val anonIdsCache: Fu[Vector[Int]] =
+    puzzleColl { // this query precisely matches a mongodb partial index
+      _.find($doc(F.voteNb $gte 100), $id(true).some)
+        .sort($sort desc F.voteRatio)
+        .cursor[Bdoc](ReadPreference.secondaryPreferred)
+        .vector(anonPuzzles)
+        .map(_.flatMap(_ int "_id"))
+    }
+
   def apply(me: Option[User]): Fu[Puzzle] = {
     me match {
       // anon
       case None =>
-        puzzleColl { // this query precisely matches a mongodb partial index
-          _.ext
-            .find($doc(F.voteNb $gte 50))
-            .sort($sort desc F.voteRatio)
-            .skip(Random nextInt anonSkipMax)
-            .one[Puzzle]
+        anonIdsCache flatMap { ids =>
+          puzzleColl {
+            _.byId[Puzzle, Int](ids(ThreadLocalRandom nextInt ids.size))
+          }
         }
       // user
       case Some(user) =>
@@ -62,7 +70,7 @@ final private[puzzle] class Selector(
       logger.info(s"Select #${puzzle.id} vote.sum: ${puzzle.vote.sum} for ${me.fold("Anon")(_.username)} (${me
         .fold("?")(_.perfs.puzzle.intRating.toString)})")
     else
-      lila.mon.puzzle.selector.vote.record(1000 + puzzle.vote.sum)
+      lila.mon.puzzle.selector.vote.record(1000 + puzzle.vote.sum).unit
   }
 
   private def newPuzzleForUser(user: User, lastPlayed: PuzzleId): Fu[Option[Puzzle]] = {
@@ -86,7 +94,7 @@ final private[puzzle] class Selector(
       step: Int,
       idRange: Range
   ): Fu[Option[Puzzle]] =
-    coll.ext
+    coll
       .find(
         rangeSelector(
           rating = rating,
@@ -108,9 +116,9 @@ final private object Selector {
     val message = "No puzzles available"
   }
 
-  val toleranceMax = 1000
+  val anonPuzzles = 8192
 
-  val anonSkipMax = 5000
+  val toleranceMax = 1000
 
   def toleranceStepFor(rating: Int, nbPuzzles: Int) = {
     math.abs(1500 - rating) match {
@@ -126,12 +134,13 @@ final private object Selector {
     else 1
   }
 
-  def rangeSelector(rating: Int, tolerance: Int, idRange: Range) = $doc(
-    F.id $gt idRange.min $lt idRange.max,
-    F.rating $gt (rating - tolerance) $lt (rating + tolerance),
-    $or(
-      F.voteRatio $gt AggregateVote.minRatio,
-      F.voteNb $lt AggregateVote.minVotes
+  def rangeSelector(rating: Int, tolerance: Int, idRange: Range) =
+    $doc(
+      F.id $gt idRange.min $lt idRange.max,
+      F.rating $gt (rating - tolerance) $lt (rating + tolerance),
+      $or(
+        F.voteRatio $gt AggregateVote.minRatio,
+        F.voteNb $lt AggregateVote.minVotes
+      )
     )
-  )
 }

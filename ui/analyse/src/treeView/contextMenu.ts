@@ -1,6 +1,6 @@
 import { h } from 'snabbdom'
 import { VNode } from 'snabbdom/vnode'
-import studyView = require('../study/studyView');
+import * as studyView from '../study/studyView';
 import { nodeFullName, bind } from '../util';
 import AnalyseCtrl from '../ctrl';
 import { patch } from '../main';
@@ -80,7 +80,9 @@ function view(opts: Opts, coords: Coords): VNode {
 }
 
 export default function(e: MouseEvent, opts: Opts): void {
-  const el = $('#' + elementId)[0] || $('<div id="' + elementId + '">').appendTo($('body'))[0];
+  const el = (
+    $('#' + elementId)[0] || $('<div id="' + elementId + '">').appendTo($('body'))[0]
+  ) as HTMLElement;
   opts.root.contextMenuPath = opts.path;
   function close(e: MouseEvent) {
     if (e.button === 2) return; // right click

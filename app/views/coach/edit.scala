@@ -1,11 +1,13 @@
 package views.html.coach
 
 import play.api.data.Form
+import play.api.libs.json.Json
 
 import lila.api.Context
 import lila.app.templating.Environment._
+import lila.i18n.LangList
 import lila.app.ui.ScalatagsTemplate._
-import lila.common.String.html.richText
+import lila.common.String.html.{ richText, safeJsonValue }
 
 import controllers.routes
 
@@ -14,17 +16,26 @@ object edit {
   private val dataTab   = attr("data-tab")
   private val dataValue = attr("data-value")
 
-  def apply(c: lila.coach.Coach.WithUser, form: Form[_], reviews: lila.coach.CoachReview.Reviews)(
-      implicit ctx: Context
+  private lazy val jsonLanguages = safeJsonValue {
+    Json toJson LangList.popularNoRegion.map { l =>
+      Json.obj(
+        "code"  -> l.code,
+        "value" -> LangList.name(l),
+        "searchBy" -> List(
+          l.toLocale.getDisplayLanguage,
+          l.toLocale.getDisplayCountry
+        ).mkString(",")
+      )
+    }
+  }
+
+  def apply(c: lila.coach.Coach.WithUser, form: Form[_], reviews: lila.coach.CoachReview.Reviews)(implicit
+      ctx: Context
   ) = {
     views.html.account.layout(
       title = s"${c.user.titleUsername} coach page",
-      evenMoreCss = cssTag("coach.editor"),
-      evenMoreJs = frag(
-        jsAt("vendor/jquery.form.min.js"),
-        jsAt("vendor/bar-rating/dist/jquery.barrating.min.js"),
-        jsTag("coach.form.js")
-      ),
+      evenMoreCss = frag(cssTag("coach.editor"), cssTag("tagify")),
+      evenMoreJs = jsModule("coach.form"),
       active = "coach"
     )(
       div(cls := "account coach-edit box")(
@@ -33,19 +44,19 @@ object edit {
             if (c.coach.hasPicture)
               a(
                 cls := "upload_picture",
-                href := routes.Coach.picture,
+                href := routes.Coach.picture(),
                 title := "Change/delete your profile picture"
               )(
                 widget.pic(c, 250)
               )
             else
               div(cls := "upload_picture")(
-                a(cls := "button", href := routes.Coach.picture)("Upload a profile picture")
+                a(cls := "button", href := routes.Coach.picture())("Upload a profile picture")
               )
           ),
           div(cls := "overview")(
             h1(widget.titleName(c)),
-            div(cls := "todo", attr("data-profile") := c.user.profileOrDefault.isComplete)(
+            div(cls := "todo", attr("data-profile") := c.user.profileOrDefault.nonEmptyRealName.isDefined)(
               h3("TODO list before publishing your coach profile"),
               ul
             ),
@@ -58,7 +69,7 @@ object edit {
             )
           )
         ),
-        postForm(cls := "box__pad form3 async", action := routes.Coach.edit)(
+        postForm(cls := "box__pad form3 async", action := routes.Coach.edit())(
           div(cls := "tabs")(
             div(dataTab := "basics", cls := "active")("Basics"),
             div(dataTab := "texts")("Texts"),
@@ -90,11 +101,16 @@ object edit {
               )(form3.input(_)),
               form3.split(
                 form3.group(
-                  form("profile.languages"),
+                  form("languages"),
                   raw("Languages spoken"),
-                  help = raw("Which languages can you give lessons in? (3 to 140 chars)").some,
+                  help = raw("Which languages can you give lessons in?").some,
                   half = true
-                )(form3.input(_)),
+                )(
+                  form3.input(_)(
+                    data("all") := jsonLanguages,
+                    data("value") := c.coach.languages.mkString(",")
+                  )
+                ),
                 form3.group(
                   form("profile.hourlyRate"),
                   raw("Hourly rate"),
@@ -136,8 +152,8 @@ object edit {
             div(cls := "panel contents")(
               form3.group(
                 form("profile.publicStudies"),
-                raw("Featured public lichess studies"),
-                help = raw("Up to 6 lichess study URLs, one per line").some
+                raw("Featured public Lichess studies"),
+                help = raw("Up to 6 Lichess study URLs, one per line").some
               )(form3.textarea(_)()),
               form3.group(form("profile.youtubeChannel"), raw("URL of your Youtube channel"))(form3.input(_)),
               form3.group(

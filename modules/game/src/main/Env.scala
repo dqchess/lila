@@ -1,11 +1,10 @@
 package lila.game
 
 import akka.actor._
-import com.github.blemale.scaffeine.Scaffeine
 import com.softwaremill.macwire._
 import io.methvin.play.autoconfig._
 import play.api.Configuration
-import play.api.libs.ws.WSClient
+import play.api.libs.ws.StandaloneWSClient
 import scala.concurrent.duration._
 
 import lila.common.config._
@@ -17,22 +16,24 @@ final private class GameConfig(
     @ConfigName("paginator.max_per_page") val paginatorMaxPerPage: MaxPerPage,
     @ConfigName("captcher.name") val captcherName: String,
     @ConfigName("captcher.duration") val captcherDuration: FiniteDuration,
-    val uciMemoTtl: FiniteDuration,
-    val pngUrl: String,
-    val pngSize: Int
+    val gifUrl: String
 )
 
 @Module
 final class Env(
     appConfig: Configuration,
-    ws: WSClient,
+    ws: StandaloneWSClient,
     db: lila.db.Db,
     baseUrl: BaseUrl,
     userRepo: lila.user.UserRepo,
-    mongoCache: lila.memo.MongoCache.Builder,
-    getLightUser: lila.common.LightUser.Getter,
+    mongoCache: lila.memo.MongoCache.Api,
+    lightUserApi: lila.user.LightUserApi,
     cacheApi: lila.memo.CacheApi
-)(implicit ec: scala.concurrent.ExecutionContext, system: ActorSystem, scheduler: Scheduler) {
+)(implicit
+    ec: scala.concurrent.ExecutionContext,
+    system: ActorSystem,
+    scheduler: Scheduler
+) {
 
   private val config = appConfig.get[GameConfig]("game")(AutoConfig.loader)
   import config.paginatorMaxPerPage
@@ -41,7 +42,7 @@ final class Env(
 
   lazy val idGenerator = wire[IdGenerator]
 
-  lazy val pngExport = new PngExport(ws, config.pngUrl, config.pngSize)
+  lazy val gifExport = new GifExport(ws, lightUserApi, baseUrl, config.gifUrl)
 
   lazy val divider = wire[Divider]
 
@@ -49,25 +50,23 @@ final class Env(
 
   lazy val paginator = wire[PaginatorBuilder]
 
-  lazy val uciMemo = new UciMemo(gameRepo, config.uciMemoTtl)
+  lazy val uciMemo = wire[UciMemo]
 
   lazy val pgnDump = wire[PgnDump]
 
   lazy val crosstableApi = new CrosstableApi(
     coll = db(config.crosstableColl),
-    matchupColl = db(config.matchupColl),
-    userRepo = userRepo,
-    gameRepo = gameRepo
+    matchupColl = db(config.matchupColl)
   )
-
-  lazy val playTime = wire[PlayTimeApi]
 
   lazy val gamesByUsersStream = wire[GamesByUsersStream]
 
-  lazy val bestOpponents = wire[BestOpponents]
+  lazy val favoriteOpponents = wire[FavoriteOpponents]
 
   lazy val rematches = Rematches(
-    Scaffeine().expireAfterWrite(3 hour).build[Game.ID, Game.ID]
+    lila.memo.CacheApi.scaffeineNoScheduler
+      .expireAfterWrite(1 hour)
+      .build[Game.ID, Game.ID]()
   )
 
   lazy val jsonView = wire[JsonView]

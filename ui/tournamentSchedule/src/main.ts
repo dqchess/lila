@@ -10,11 +10,15 @@ const patch = init([klass, attributes]);
 
 dragscroll // required to include the dependency :( :( :(
 
-export function app(element: HTMLElement, env: any) {
+export default function(env: any) {
+
+  lichess.StrongSocket.defaultParams.flag = 'tournament';
+
+  const element = document.querySelector('.tour-chart') as HTMLElement;
 
   let vnode: VNode, ctrl = {
     data: () => env.data,
-    trans: window.lichess.trans(env.i18n)
+    trans: lichess.trans(env.i18n)
   };
 
   function redraw() {
@@ -25,10 +29,21 @@ export function app(element: HTMLElement, env: any) {
 
   setInterval(redraw, 3700);
 
-  return {
-    update: d => {
-      env.data = d;
-      redraw();
-    }
-  };
+  lichess.pubsub.on('socket.in.reload', d => {
+    env.data = {
+      created: update(env.data.created, d.created),
+      started: update(env.data.started, d.started),
+      finished: update(env.data.finished, d.finished)
+    };
+    redraw();
+  });
 };
+
+function update(prevs, news) {
+  // updates ignore team tournaments (same for all)
+  // also lacks finished tournaments
+  const now = new Date().getTime();
+  return news.concat(
+    prevs.filter(p => !p.schedule || p.finishesAt < now)
+  );
+}

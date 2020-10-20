@@ -7,7 +7,7 @@ import scala.concurrent.Promise
 
 /*
  * Sequential like an actor, but for async functions,
- * and using an STM backend instead of akka actor.
+ * and using an atomic backend instead of akka actor.
  */
 abstract class Duct(implicit ec: scala.concurrent.ExecutionContext) extends lila.common.Tellable {
 
@@ -20,12 +20,10 @@ abstract class Duct(implicit ec: scala.concurrent.ExecutionContext) extends lila
     if (stateRef.getAndUpdate(state => Some(state.fold(Queue.empty[Any])(_ enqueue msg))).isEmpty) run(msg)
 
   def ask[A](makeMsg: Promise[A] => Any): Fu[A] = {
-    val promise = Promise[A]
+    val promise = Promise[A]()
     this ! makeMsg(promise)
     promise.future
   }
-
-  def queueSize = stateRef.get().fold(0)(_.size + 1)
 
   /*
    * Idle: None

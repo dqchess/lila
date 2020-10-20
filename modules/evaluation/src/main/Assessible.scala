@@ -21,7 +21,7 @@ case class Assessible(analysed: Analysed, color: Color) {
   lazy val alwaysHasAdvantage: Boolean =
     !analysis.infos.exists { info =>
       info.cp.fold(info.mate.fold(false) { a =>
-        (a.signum == color.fold(-1, 1))
+        a.signum == color.fold(-1, 1)
       }) { cp =>
         color.fold(cp.centipawns < -100, cp.centipawns > 100)
       }
@@ -37,10 +37,7 @@ case class Assessible(analysed: Analysed, color: Color) {
     analysed.holdAlerts(color).exists(_.suspicious)
 
   lazy val highestChunkBlurs: Int =
-    game.player(color).blurs match {
-      case bits: lila.game.Blurs.Bits => bits.booleans.sliding(12).map(_.count(identity)).max
-      case _                          => 0
-    }
+    game.player(color).blurs.booleans.sliding(12).map(_.count(identity)).max
 
   lazy val highChunkBlurRate: Boolean =
     highestChunkBlurs >= 11
@@ -50,7 +47,8 @@ case class Assessible(analysed: Analysed, color: Color) {
 
   lazy val highlyConsistentMoveTimes: Boolean =
     if (game.clock.forall(_.estimateTotalSeconds > 60))
-      moveTimeCoefVariation(Pov(game, color)) ?? { cvIndicatesHighlyFlatTimes(_) } else
+      moveTimeCoefVariation(Pov(game, color)) ?? { cvIndicatesHighlyFlatTimes(_) }
+    else
       false
 
   // moderatelyConsistentMoveTimes must stay in Statistics because it's used in classes that do not use Assessible
@@ -59,7 +57,8 @@ case class Assessible(analysed: Analysed, color: Color) {
     if (game.clock.forall(_.estimateTotalSeconds > 60))
       slidingMoveTimesCvs(Pov(game, color)) ?? {
         _ exists cvIndicatesHighlyFlatTimesForStreaks
-      } else
+      }
+    else
       false
 
   lazy val mkFlags: PlayerFlags = PlayerFlags(
@@ -106,7 +105,8 @@ case class Assessible(analysed: Analysed, color: Color) {
 
     if (flags.suspiciousHoldAlert) assessment
     else if (~game.wonBy(color)) assessment
-    else if (assessment == Cheating || assessment == LikelyCheating) Unclear
+    else if (assessment == Cheating) LikelyCheating
+    else if (assessment == LikelyCheating) Unclear
     else assessment
   }
 
@@ -116,12 +116,19 @@ case class Assessible(analysed: Analysed, color: Color) {
   lazy val mtSd: Int  = listDeviation(~game.moveTimes(color) map (_.roundTenths)).toInt
   lazy val blurs: Int = game.playerBlurPercent(color)
 
+  lazy val tcFactor: Double = game.speed match {
+    case Speed.Bullet | Speed.Blitz => 1.25
+    case Speed.Rapid                => 1.0
+    case Speed.Classical            => 0.6
+    case _                          => 1.0
+  }
+
   def playerAssessment: PlayerAssessment =
     PlayerAssessment(
       _id = game.id + "/" + color.name,
       gameId = game.id,
       userId = ~game.player(color).userId,
-      white = (color == Color.White),
+      white = color == Color.White,
       assessment = rankCheating,
       date = DateTime.now,
       // meta
@@ -133,6 +140,7 @@ case class Assessible(analysed: Analysed, color: Color) {
       blurs = blurs,
       hold = suspiciousHoldAlert,
       blurStreak = highestChunkBlurs.some.filter(0 <),
-      mtStreak = highlyConsistentMoveTimeStreaks.some.filter(identity)
+      mtStreak = highlyConsistentMoveTimeStreaks.some.filter(identity),
+      tcFactor = tcFactor.some
     )
 }

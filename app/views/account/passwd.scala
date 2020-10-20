@@ -15,15 +15,17 @@ object passwd {
       active = "password"
     ) {
       div(cls := "account box box-pad")(
-        h1(
-          trans.changePassword(),
-          ctx.req.queryString.contains("ok") option
-            frag(" ", i(cls := "is-green", dataIcon := "E"))
-        ),
-        postForm(cls := "form3", action := routes.Account.passwdApply)(
-          form3.password(form("oldPasswd"), trans.currentPassword()),
-          form3.password(form("newPasswd1"), trans.newPassword()),
-          form3.password(form("newPasswd2"), trans.newPasswordAgain()),
+        h1(trans.changePassword()),
+        standardFlash(),
+        postForm(cls := "form3", action := routes.Account.passwdApply())(
+          form3.passwordModified(form("oldPasswd"), trans.currentPassword())(
+            autofocus,
+            autocomplete := "current-password"
+          ),
+          form3.passwordModified(form("newPasswd1"), trans.newPassword())(autocomplete := "new-password"),
+          form3.passwordModified(form("newPasswd2"), trans.newPasswordAgain())(
+            autocomplete := "new-password"
+          ),
           form3.action(form3.submit(trans.apply()))
         )
       )

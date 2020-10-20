@@ -11,7 +11,9 @@ import lila.common.Bus
 
 final private class TvBroadcast extends Actor {
 
-  private var queues = Set.empty[SourceQueueWithComplete[JsValue]]
+  import TvBroadcast._
+
+  private var queues = Set.empty[Queue]
 
   private var featuredId = none[String]
 
@@ -19,41 +21,59 @@ final private class TvBroadcast extends Actor {
 
   implicit def system = context.dispatcher
 
+  override def postStop() = {
+    super.postStop()
+    unsubscribeFromFeaturedId()
+  }
+
   def receive = {
 
     case TvBroadcast.Connect =>
-      sender ! Source
+      sender() ! Source
         .queue[JsValue](8, akka.stream.OverflowStrategy.dropHead)
         .mapMaterializedValue { queue =>
-          queues = queues + queue
-          queue.watchCompletion.foreach { _ =>
-            queues = queues - queue
+          self ! Add(queue)
+          queue.watchCompletion().foreach { _ =>
+            self ! Remove(queue)
           }
         }
 
+    case Add(queue)    => queues = queues + queue
+    case Remove(queue) => queues = queues - queue
+
     case ChangeFeatured(id, msg) =>
-      featuredId foreach { previous =>
-        Bus.unsubscribe(self, MoveGameEvent makeChan previous)
-      }
+      unsubscribeFromFeaturedId()
       Bus.subscribe(self, MoveGameEvent makeChan id)
       featuredId = id.some
       queues.foreach(_ offer msg)
 
-    case MoveGameEvent(_, fen, move) if queues.nonEmpty =>
+    case MoveGameEvent(game, fen, move) if queues.nonEmpty =>
       val msg = makeMessage(
         "fen",
-        Json.obj(
-          "fen" -> fen,
-          "lm"  -> move
-        )
+        Json
+          .obj(
+            "fen" -> s"$fen ${game.turnColor.letter}",
+            "lm"  -> move
+          )
+          .add("wc" -> game.clock.map(_.remainingTime(chess.White).roundSeconds))
+          .add("bc" -> game.clock.map(_.remainingTime(chess.Black).roundSeconds))
       )
       queues.foreach(_ offer msg)
   }
+
+  def unsubscribeFromFeaturedId() =
+    featuredId foreach { previous =>
+      Bus.unsubscribe(self, MoveGameEvent makeChan previous)
+    }
 }
 
 object TvBroadcast {
 
   type SourceType = Source[JsValue, _]
+  type Queue      = SourceQueueWithComplete[JsValue]
 
   case object Connect
+
+  case class Add(q: Queue)
+  case class Remove(q: Queue)
 }

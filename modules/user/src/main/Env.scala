@@ -4,7 +4,7 @@ import akka.actor._
 import com.softwaremill.macwire._
 import io.methvin.play.autoconfig._
 import play.api.Configuration
-import play.api.libs.ws.WSClient
+import play.api.libs.ws.StandaloneWSClient
 import scala.concurrent.duration._
 
 import lila.common.config._
@@ -25,12 +25,15 @@ private class UserConfig(
 final class Env(
     appConfig: Configuration,
     db: lila.db.Db,
-    mongoCache: lila.memo.MongoCache.Builder,
+    mongoCache: lila.memo.MongoCache.Api,
     cacheApi: lila.memo.CacheApi,
-    timeline: lila.hub.actors.Timeline,
     isOnline: lila.socket.IsOnline,
     onlineIds: lila.socket.OnlineIds
-)(implicit ec: scala.concurrent.ExecutionContext, system: ActorSystem, ws: WSClient) {
+)(implicit
+    ec: scala.concurrent.ExecutionContext,
+    system: ActorSystem,
+    ws: StandaloneWSClient
+) {
 
   private val config = appConfig.get[UserConfig]("user")(AutoConfig.loader)
 
@@ -41,7 +44,7 @@ final class Env(
   val lightUserSync              = lightUserApi.sync
   val isBotSync                  = new LightUser.IsBotSync(id => lightUserApi.sync(id).exists(_.isBot))
 
-  lazy val botIds = new GetBotIds(() => cached.botIds.get({}))
+  lazy val botIds = new GetBotIds(() => cached.botIds.get {})
 
   lazy val jsonView = wire[JsonView]
 
@@ -50,7 +53,7 @@ final class Env(
     mk(db(config.collectionNote))
   }
 
-  lazy val trophyApi = new TrophyApi(db(config.collectionTrophy), db(config.collectionTrophyKind))
+  lazy val trophyApi = new TrophyApi(db(config.collectionTrophy), db(config.collectionTrophyKind), cacheApi)
 
   lazy val rankingApi = {
     def mk = (coll: Coll) => wire[RankingApi]
@@ -67,24 +70,23 @@ final class Env(
 
   lazy val authenticator = wire[Authenticator]
 
-  lazy val forms = wire[DataForm]
+  lazy val forms = wire[UserForm]
 
   lila.common.Bus.subscribeFuns(
-    "adjustCheater" -> {
-      case lila.hub.actorApi.mod.MarkCheater(userId, true) =>
-        rankingApi remove userId
-        repo.setRoles(userId, Nil)
+    "adjustCheater" -> { case lila.hub.actorApi.mod.MarkCheater(userId, true) =>
+      rankingApi remove userId
+      repo.setRoles(userId, Nil).unit
     },
-    "adjustBooster" -> {
-      case lila.hub.actorApi.mod.MarkBooster(userId) => rankingApi remove userId
+    "adjustBooster" -> { case lila.hub.actorApi.mod.MarkBooster(userId) =>
+      rankingApi.remove(userId).unit
     },
-    "kickFromRankings" -> {
-      case lila.hub.actorApi.mod.KickFromRankings(userId) => rankingApi remove userId
+    "kickFromRankings" -> { case lila.hub.actorApi.mod.KickFromRankings(userId) =>
+      rankingApi.remove(userId).unit
     },
-    "gdprErase" -> {
-      case User.GDPRErase(user) =>
-        repo erase user
-        noteApi erase user
+    "gdprErase" -> { case User.GDPRErase(user) =>
+      repo erase user
+      noteApi erase user
+      ()
     }
   )
 }

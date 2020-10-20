@@ -29,8 +29,8 @@ object bits {
       )
     )
 
-  def author(name: String, videos: Paginator[lila.video.VideoView], control: lila.video.UserControl)(
-      implicit ctx: Context
+  def author(name: String, videos: Paginator[lila.video.VideoView], control: lila.video.UserControl)(implicit
+      ctx: Context
   ) =
     layout(
       title = s"$name • Free Chess Videos",
@@ -38,7 +38,7 @@ object bits {
     )(
       div(cls := "box__top")(
         h1(
-          a(cls := "is4 text", dataIcon := "i", href := s"${routes.Video.index}?${control.queryString}"),
+          a(cls := "is4 text", dataIcon := "i", href := s"${routes.Video.index()}?${control.queryString}"),
           name
         ),
         span(
@@ -46,43 +46,37 @@ object bits {
           " found"
         )
       ),
-      div(cls := "list infinitescroll box__pad")(
+      div(cls := "list infinite-scroll box__pad")(
         videos.currentPageResults.map { card(_, control) },
-        videos.nextPage.map { next =>
-          div(cls := "pager none")(
-            a(rel := "next", href := s"${routes.Video.author(name)}?${control.queryString}&page=${next}")(
-              "Next"
-            )
-          )
-        }
+        pagerNext(videos, np => s"${routes.Video.author(name)}?${control.queryString}&page=$np")
       )
     )
 
   def notFound(control: lila.video.UserControl)(implicit ctx: Context) =
     layout(title = "Video not found", control = control)(
       div(cls := "content_box_top")(
-        a(cls := "is4 text lichess_title", dataIcon := "i", href := routes.Video.index)("Video library")
+        a(cls := "is4 text lichess_title", dataIcon := "i", href := routes.Video.index())("Video library")
       ),
       div(cls := "not_found")(
         h1("Video Not Found!"),
         br,
         br,
-        a(cls := "big button text", dataIcon := "i", href := routes.Video.index)(
+        a(cls := "big button text", dataIcon := "i", href := routes.Video.index())(
           "Return to the video library"
         )
       )
     )
 
   def searchForm(query: Option[String])(implicit ctx: Context) =
-    form(cls := "search", method := "GET", action := routes.Video.index)(
-      input(placeholder := trans.search.txt(), tpe := "text", name := "q", value := query)
+    form(cls := "search", method := "GET", action := routes.Video.index())(
+      input(placeholder := trans.search.search.txt(), tpe := "text", name := "q", value := query)
     )
 
   def tags(ts: List[lila.video.TagNb], control: lila.video.UserControl)(implicit ctx: Context) =
     layout(title = s"Tags • Free Chess Videos", control = control)(
       div(cls := "box__top")(
         h1(cls := "lichess_title")(
-          a(cls := "text", dataIcon := "i", href := s"${routes.Video.index}?${control.queryString}")(
+          a(cls := "text", dataIcon := "i", href := s"${routes.Video.index()}?${control.queryString}")(
             "All ",
             ts.size,
             " video tags"
@@ -91,7 +85,7 @@ object bits {
       ),
       div(cls := "tag-list box__pad")(
         ts.sortBy(_.tag).map { t =>
-          a(cls := "tag", href := s"${routes.Video.index}?tags=${t.tag}")(
+          a(cls := "tag", href := s"${routes.Video.index()}?tags=${t.tag}")(
             t.tag.capitalize,
             em(t.nb)
           )
